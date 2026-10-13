@@ -1,0 +1,86 @@
+import { Metadata } from 'next';
+import { cache } from 'react';
+import { notFound } from 'next/navigation';
+import PublicProfileClient from '@/features/profile/components/public/PublicProfileClient';
+import { type PublicProfile } from '@/features/profile/publicProfile';
+import { toPublicProfileData } from '@/features/profile/mapToPublicProfile';
+import { serverApiClient } from '@/lib/api/server-client';
+
+export const revalidate = 60;
+
+interface PageProps {
+    params: Promise<{ username: string }>;
+}
+
+// Shared by generateMetadata + the page, so one request fetches once.
+// Returns null only for unknown handles and never-published profiles (the API
+// answers both with 404); transport failures and 5xx rethrow so the error
+// boundary renders instead of the not-found copy.
+//
+// A lapsed boost is deliberately NOT a 404 — the page stays up. `revalidate = 60`
+// then only governs how fast an edit lands, not whether the URL resolves.
+const getProfile = cache(async (username: string): Promise<PublicProfile | null> => {
+    try {
+        const res = await serverApiClient<{ success: boolean; data: PublicProfile }>(
+            `/api/public/profiles/${encodeURIComponent(username.toLowerCase())}`,
+            // Align with this page's revalidate window. The server client otherwise caches
+            // public reads for 30 minutes, so a profile the owner just republished would
+            // keep serving the previous version long after the page itself refreshed.
+            { next: { revalidate: 60 } },
+        );
+        return res?.data ?? null;
+    } catch (error) {
+        if ((error as { status?: number } | null)?.status === 404) return null;
+        throw error;
+    }
+});
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+    const { username } = await params;
+    const profile = await getProfile(username);
+    if (!profile) {
+        // `absolute` — the root template appended a second "| FresherFlow".
+        return { title: { absolute: 'Profile not found — FresherFlow' }, robots: { index: false, follow: false } };
+    }
+    const name = profile.fullName || username;
+    const headline = profile.headline || `${profile.degree || 'Fresher'} · ${profile.gradYear ?? ''}`.trim();
+    const description = headline
+        ? `${headline} · Skills: ${(profile.skills || []).slice(0, 5).join(', ')}`
+        : `View ${name}'s fresher profile on FresherFlow.`;
+    // No OG image: a profile has no shareable asset, and inheriting the site-wide
+    // `/opengraph-image` would put a generic brand card on a personal URL.
+    return {
+        title: `${name} — Fresher Profile`,
+        description,
+        // Profiles are indexed by username only, so the canonical is the one URL
+        // that must never be a variant. Without it, a profile reachable under two
+        // casings splits its own signals.
+        alternates: { canonical: `/u/${username}` },
+        openGraph: {
+            title: `${name} — Fresher Profile`,
+            description,
+            type: 'profile',
+            url: `/u/${username}`,
+        },
+        twitter: {
+            card: 'summary',
+            title: `${name} — Fresher Profile`,
+            description,
+        },
+    };
+}
+
+export default async function PublicProfilePage({ params }: PageProps) {
+    const { username } = await params;
+    const profile = await getProfile(username);
+
+    if (!profile) {
+        // Never cache the miss: the owner may publish this page moments from now, and a
+        // cached 404 would keep their own link broken for the whole revalidate window.
+        const { unstable_noStore } = await import('next/cache');
+        unstable_noStore();
+        notFound();
+    }
+
+    return <PublicProfileClient data={toPublicProfileData(profile)} />;
+}

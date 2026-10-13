@@ -1,0 +1,778 @@
+import { chromium, Page } from 'playwright';
+
+// Shared utilities — canonical source lives in job-discovery/src
+import { normalizeUrl, loadEnv, EXPIRED_REGEXES, withTimeout, AGGREGATOR_RULES, fetchSignedJson } from '@fresherflow/pipeline';
+import { sendTelegramMessage } from '@fresherflow/utils';
+
+await loadEnv();
+
+const API_URL = (process.env.API_URL || '').trim().replace(/\/$/, '');
+const INGESTION_URL = (process.env.INGESTION_URL || 'http://localhost:3005').trim().replace(/\/$/, '');
+if (!process.env.INTERNAL_API_SECRET) {
+    console.error('FATAL: INTERNAL_API_SECRET environment variable is required but not set.');
+    process.exit(1);
+}
+const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET.trim();
+
+interface SweeperCheckResult {
+    status: 'live' | 'expired' | 'review';
+    reason?: string;
+}
+
+async function checkJob(page: Page, url: string, isSecondPass = false): Promise<SweeperCheckResult> {
+    try {
+        // Cheap HEAD precheck before any browser work: dead servers answer
+        // HEAD honestly even when they bot-wall headless browsers (avature 403
+        // vs real 404 behind the wall). 404/410 here is a certain verdict.
+        try {
+            const proto = new URL(url).protocol;
+            if (proto === 'http:' || proto === 'https:') {
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), 8000);
+                try {
+                    const head = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal });
+                    if (head.status === 404 || head.status === 410) {
+                        console.log(`  -> HEAD ${head.status} — job expired/removed (no browser needed).`);
+                        return { status: 'expired' };
+                    }
+                } finally {
+                    clearTimeout(t);
+                }
+            }
+        } catch {
+            // Fail open: any precheck error falls through to the browser path.
+        }
+        let response = null;
+        let loadFailed = false;
+        try {
+            response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: isSecondPass ? 30000 : 15000 });
+        } catch (gotoErr) {
+            console.error(`Error loading ${url}:`, (gotoErr as Error).message);
+            const errMsg = (gotoErr as Error).message.toLowerCase();
+            if (errMsg.includes('net::err_name_not_resolved') || 
+                errMsg.includes('net::err_connection_refused') || 
+                errMsg.includes('net::err_address_unreachable') ||
+                errMsg.includes('net::err_connection_aborted') ||
+                errMsg.includes('net::err_connection_reset')
+            ) {
+                console.log(`  -> Hard network/DNS error: ${errMsg}. Marking as expired.`);
+                return { status: 'expired' };
+            }
+            loadFailed = true;
+        }
+
+        if (response && (response.status() === 404 || response.status() === 410)) {
+            console.log(`  -> Page returned inactive status code: ${response.status()}`);
+            return { status: 'expired' };
+        }
+
+        if (response && (response.status() === 403 || response.status() === 401)) {
+            console.log(`  -> Page returned auth/blocked status code: ${response.status()} for ${url}. Marking for review.`);
+            return { status: 'review', reason: 'blocked-403' };
+        }
+
+        const finalUrl = page.url().toLowerCase();
+        if (finalUrl.includes('not_found') || finalUrl.includes('jobnotfound') || finalUrl.includes('job-not-found') || finalUrl.includes('/jobnotfound') || finalUrl.includes('/job-not-found') || finalUrl.includes('/expired') || finalUrl.includes('error=true')) {
+            console.log(`  -> URL indicates job not found / redirect to portal: ${page.url()}. Marking as expired.`);
+            return { status: 'expired' };
+        }
+        
+        // Smart Wait: Wait dynamically for Javascript/SPAs (like Workday/Upstox) to paint the job description text.
+        await page.waitForFunction(() => {
+            const main = document.querySelector('main, article, [data-automation-id="jobPostingSection"], #content, .job-description, [role="main"], [itemprop="description"], .job-sections, .sr-job-description');
+            if (main && (main as HTMLElement).innerText.trim().length > 150) return true;
+            return document.body && document.body.innerText.trim().length > 400;
+        }, { timeout: isSecondPass ? 25000 : 8000 }).catch(() => {});
+
+        // Give SPAs a moment to hydrate over their loading states (e.g. Eightfold "Job not found" flash)
+        await page.waitForTimeout(2000);
+        
+        const pageTitle = await page.title().catch(() => "");
+        const lowerTitle = pageTitle.toLowerCase().trim();
+        if (lowerTitle.includes('403') || lowerTitle.includes('forbidden') || lowerTitle.includes('access denied') || lowerTitle.includes('checking your browser') || lowerTitle.includes('attention required')) {
+            console.log(`  -> Access blocked (Forbidden/Cloudflare/403 page title: "${pageTitle}"). Marking for review.`);
+            return { status: 'review' };
+        }
+
+        // Target main content containers first to avoid false positives from sidebars/footers
+        let mainText = "";
+        const contentSelectors = [
+            '[itemprop="description"]',
+            '.job-sections',
+            '.sr-job-description',
+            '[data-automation-id="jobPostingSection"]',
+            '#careers-portal',
+            '.job-description',
+            'article',
+            'main',
+            '[role="main"]',
+            '#content',
+            '#main'
+        ];
+        for (const selector of contentSelectors) {
+            const text = await page.locator(selector).first().innerText({ timeout: 100 }).catch(() => "");
+            if (text && text.trim().length > 200) {
+                mainText = text;
+                break;
+            }
+        }
+
+        let iframeText = "";
+        try {
+            for (const frame of page.frames()) {
+                const fText = await frame.locator('body').innerText({ timeout: 100 }).catch(() => "");
+                if (fText) iframeText += " " + fText;
+            }
+        } catch (e) {}
+
+        const rawBody = await page.locator('body').innerText({ timeout: 500 }).catch(() => "");
+        const bodyText = mainText || (rawBody + " " + iframeText); // Used for length check
+        
+        // Always check the FULL raw body (including toasts/modals outside main) for expired phrases
+        const checkText = (rawBody + " " + iframeText).toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ');
+
+        let hasExpiredPhrase = false;
+        for (const pattern of EXPIRED_REGEXES) {
+            if (pattern.test(checkText)) {
+                hasExpiredPhrase = true;
+                break;
+            }
+        }
+
+        if (hasExpiredPhrase) {
+            return { status: 'expired' };
+        }
+
+        if (!bodyText || bodyText.trim().length < 150) {
+            if (loadFailed) {
+                console.log(`  -> Navigation failed and page body is empty/too short. Marking for review.`);
+                return { status: 'review' };
+            }
+            console.log(`  -> Page body is empty or too short. Marking for review.`);
+            return { status: 'review' };
+        }
+
+        return { status: 'live' };
+    } catch (err) {
+        console.error(`Error checking ${url}:`, (err as Error).message);
+        return { status: 'review' };
+    }
+}
+
+interface FeedOpportunity {
+    id: string;
+    slug?: string;
+    title: string;
+    company: string;
+    applyLink?: string;
+    sourceLink?: string;
+    publishedAt?: string;
+    type?: 'production' | 'discovered' | 'processed' | 'external';
+}
+
+interface FeedJson {
+    opportunities?: FeedOpportunity[];
+}
+
+async function run() {
+    const runStart = Date.now();
+    console.log("Fetching CDN feed...");
+    
+    // Wake up the backend API (if serverless) so it's warm by the time we finish
+    if (API_URL) {
+        console.log("Waking up API server...");
+        fetch(`${API_URL}/api/health`).catch(() => {});
+    }
+    
+    let feed: FeedJson | undefined;
+    // The CDN feed is one of three sources (CDN + ingestion API + external board).
+    // Losing it degrades coverage; it does not invalidate the run. Only exit when
+    // every source is gone, otherwise there is genuinely nothing to sweep.
+    const cdnFeed = await fetchSignedJson<FeedJson>('/bootstrap-feed.min.json', {
+        label: 'bootstrap-feed.min.json',
+        attempts: 3,
+        validate: (data) => typeof data === 'object' && data !== null,
+    });
+    if (cdnFeed.ok) {
+        feed = cdnFeed.data;
+    } else {
+        console.warn(`⚠️  CDN feed unavailable (${cdnFeed.reason}). Continuing with ingestion + external sources only.`);
+    }
+
+    let opportunities = feed?.opportunities || [];
+    let cdnOpportunityCount = opportunities.length;
+
+    let ingestionSuccess = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            console.log(`Fetching jobs from Ingestion API (Attempt ${attempt}/3)...`);
+            const res = await fetch(`${INGESTION_URL}/data/jobs/sweep-feed`, {
+                headers: {
+                    'Authorization': `Bearer ${INTERNAL_API_SECRET}`
+                }
+            });
+            if (res.ok) {
+                const ingestionFeed = await res.json() as { opportunities?: FeedOpportunity[] };
+                if (ingestionFeed.opportunities && Array.isArray(ingestionFeed.opportunities)) {
+                    opportunities = opportunities.concat(ingestionFeed.opportunities);
+                    console.log(`Added ${ingestionFeed.opportunities.length} jobs from Ingestion API.`);
+                }
+                ingestionSuccess = true;
+                break;
+            } else {
+                console.warn(`Ingestion feed fetch returned status: ${res.status}`);
+                // Retry only on Gateway/Timeout errors which indicate cold start
+                if (res.status !== 502 && res.status !== 503 && res.status !== 504) {
+                    break; 
+                }
+            }
+        } catch (err) {
+            console.error(`Failed to fetch ingestion sweep feed on attempt ${attempt}:`, err instanceof Error ? err.message : String(err));
+        }
+        
+        if (attempt < 3) {
+            console.log("Waiting 20 seconds for Ingestion API to wake up...");
+            await new Promise(r => setTimeout(r, 20000));
+        }
+    }
+
+    if (!ingestionSuccess) {
+        console.warn("Could not fetch from Ingestion API after all attempts. Proceeding with production jobs only.");
+    }
+
+    // Community board feed (India-Jobs-Internships data/jobs.json, via
+    // EXTERNAL_JOBS_JSON): unknown links join the same normalized-URL dedupe
+    // below, so overlaps with production/processed/discovered cost zero extra
+    // checks. Already-EXPIRED entries are never re-fetched. Unset = skipped.
+    const externalJobsUrl = (process.env.EXTERNAL_JOBS_JSON || '').trim();
+    let externalSourceStatus = externalJobsUrl ? 'configured' : 'not configured';
+    if (externalJobsUrl) {
+        try {
+            const extRes = await fetch(externalJobsUrl);
+            if (extRes.ok) {
+                const extData = await extRes.json() as { jobs?: Array<{ title?: string; company?: string; applyLink?: string; status?: string }> };
+                const extOpps: FeedOpportunity[] = (extData.jobs || [])
+                    .filter(j => j.applyLink && (j.status || 'PUBLISHED') !== 'EXPIRED')
+                    .map(j => ({ id: '', title: j.title || 'External job', company: j.company || 'Unknown', applyLink: j.applyLink as string, sourceLink: j.applyLink as string, type: 'external' as const }));
+                opportunities = opportunities.concat(extOpps);
+                externalSourceStatus = `ok (${extOpps.length})`;
+                console.log(`Added ${extOpps.length} jobs from external board feed.`);
+            } else {
+                externalSourceStatus = `HTTP ${extRes.status}`;
+                console.warn(`External board feed returned status: ${extRes.status}`);
+            }
+        } catch (err) {
+            externalSourceStatus = err instanceof Error ? err.message : String(err);
+            console.warn('External board feed fetch failed (continuing without it):', err instanceof Error ? err.message : String(err));
+        }
+    }
+
+    // Every source failed. This is a real outage, not a degraded run — sweeping
+    // zero jobs would report a false "all healthy" and skip expiry checks.
+    const totalAvailable = opportunities.length;
+    if (totalAvailable === 0) {
+        const sources = [
+            `CDN feed: ${cdnFeed.ok ? 'ok' : cdnFeed.reason}`,
+            `Ingestion API: ${ingestionSuccess ? 'ok' : 'unavailable'}`,
+            `External board feed: ${externalSourceStatus}`,
+        ].join(' | ');
+        console.error(`FATAL: no sweep sources available — nothing to check. Sources: ${sources}`);
+        await sendTelegramMessage(
+            `🚨 <b>Job Sweeper Aborted</b>\n\nNo job sources were reachable, so no jobs were checked.\n\n<code>${sources.replace(/</g, '&lt;')}</code>`,
+        );
+        if (process.env.GITHUB_STEP_SUMMARY) {
+            const fs = await import('fs/promises');
+            await fs.appendFile(
+                process.env.GITHUB_STEP_SUMMARY,
+                `# 🧹 Job Sweeper Bot Results\n\n` +
+                    `| Metric | Value |\n|---|---|\n` +
+                    `| **Status** | ❌ Aborted — no sources reachable |\n` +
+                    `| **Jobs Checked** | 0 |\n\n` +
+                    `Sources: ${sources}\n`,
+            ).catch(() => { /* summary is best-effort */ });
+        }
+        process.exit(1);
+    }
+
+    console.log(`Found ${totalAvailable} active opportunities to check (CDN feed: ${cdnOpportunityCount}).`);
+
+    // One admin message per run, sent at the end (see Message block below).
+    // No "started" ping — the finished summary with duration is the message.
+
+    const expiredJobs: FeedOpportunity[] = [];
+    const reviewJobs: FeedOpportunity[] = [];
+    // Unique URLs actually swept (set once discovery dedupes; reported in
+    // the final message).
+    let totalUniqueUrls = 0;
+    // Per-URL review causes: timeouts retry next run, content ambiguity needs
+    // humans. Without this split every stuck page is reported as a bug.
+    const reviewReasons = new Map<string, string>();
+    const browser = await chromium.launch({ 
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    });
+    
+    try {
+        // Limit to 8 concurrent pages/contexts to run in parallel safely
+        const CONCURRENCY = 8;
+        let checked = 0;
+        
+        const urlToOpps = new Map<string, FeedOpportunity[]>();
+        const activeOpps: FeedOpportunity[] = [];
+
+        for (const opp of opportunities) {
+            const url = opp.sourceLink || opp.applyLink;
+            if (!url) continue;
+            
+            const normalizedUrl = normalizeUrl(url);
+            // Bare homepages (http://host/ with no path) are never job links:
+            // checking them burns 15s+45s+30s and flips LIVE/review at random.
+            // Park in review with the reason instead of a browser slot.
+            try {
+                if (new URL(url).pathname.replace(/\/+$/, '') === '') {
+                    reviewJobs.push(opp);
+                    reviewReasons.set(normalizedUrl, 'bare homepage URL, not a job link');
+                    continue;
+                }
+            } catch {}
+            if (!urlToOpps.has(normalizedUrl)) {
+                urlToOpps.set(normalizedUrl, []);
+                activeOpps.push(opp);
+            }
+            urlToOpps.get(normalizedUrl)!.push(opp);
+        }
+        totalUniqueUrls = activeOpps.length;
+
+        const worker = async () => {
+            const context = await browser.newContext({
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            });
+            
+            try {
+                // Block heavy resources (images, stylesheets, fonts, media) to speed up checking and prevent hangs
+                await context.route('**/*', (route) => {
+                    const type = route.request().resourceType();
+                    if (['image', 'font', 'media'].includes(type)) {
+                        route.abort();
+                    } else {
+                        route.continue();
+                    }
+                });
+                
+                const page = await context.newPage();
+                try {
+                    let opp: FeedOpportunity | undefined;
+                    while (activeOpps.length > 0) {
+                        opp = activeOpps.shift();
+                        if (!opp) continue;
+                        
+                        const currentChecked = ++checked;
+                        const targetUrl = opp.sourceLink || opp.applyLink;
+                        if (!targetUrl) continue;
+
+                        // Minimum age guard: Do not sweep jobs published in the last 24 hours
+                        if (opp.publishedAt) {
+                            const publishedDate = new Date(opp.publishedAt);
+                            const ageHours = (Date.now() - publishedDate.getTime()) / (1000 * 60 * 60);
+                            if (ageHours < 24) {
+                                console.log(`[${currentChecked}/${totalUniqueUrls}] Skipping: ${opp.title} (Age: ${Math.round(ageHours)}h, < 24h)`);
+                                continue;
+                            }
+                        }
+                        
+                        console.log(`[${currentChecked}/${totalUniqueUrls}] Checking: ${opp.title} @ ${opp.company}`);
+                        
+                        let checkResult: SweeperCheckResult = { status: 'review' };
+                        try {
+                            checkResult = await Promise.race([
+                                checkJob(page, targetUrl),
+                                new Promise<SweeperCheckResult>((_, reject) => setTimeout(() => reject(new Error('HARD_TIMEOUT')), 45000))
+                            ]);
+                        } catch (err: any) {
+                            if (err.message === 'HARD_TIMEOUT') {
+                                console.log(`  -> ⚠️ Hard timeout (stuck for 45s) for ${targetUrl}. Marking for review.`);
+                                reviewReasons.set(normalizeUrl(targetUrl), 'navigation timed out (45s hard limit)');
+                                // If the page is completely frozen, we should ideally recreate it.
+                                // However, Playwright pages usually recover from timeouts if navigation is aborted.
+                            } else {
+                                console.log(`  -> ⚠️ Unexpected error: ${err.message}`);
+                            }
+                        }
+                        
+                        const normalizedUrl = normalizeUrl(targetUrl);
+                        const duplicates = urlToOpps.get(normalizedUrl) || [opp];
+                        
+                        if (checkResult.status === 'expired') {
+                            console.log(`❌ EXPIRED: ${opp.title} @ ${targetUrl}`);
+                            expiredJobs.push(...duplicates);
+                        } else if (checkResult.status === 'review') {
+                            console.log(`⚠️ REVIEW REQUIRED: ${opp.title} @ ${targetUrl}`);
+                            reviewJobs.push(...duplicates);
+                            // A 403 now re-checks 403 minutes later behind the same
+                            // Cloudflare wall — record it so the second pass skips
+                            // the repeat instead of burning another full check.
+                            if (checkResult.reason === 'blocked-403') {
+                                for (const d of duplicates) {
+                                    reviewReasons.set(normalizeUrl(d.sourceLink || d.applyLink || ''), 'blocked-403');
+                                }
+                            }
+                        } else {
+                            console.log(`✅ LIVE: ${opp.title} @ ${targetUrl}`);
+                        }
+                        
+                        // Anti-bot delay
+                        await page.waitForTimeout(1500);
+                    }
+                } finally {
+                    await withTimeout(page.close().catch(() => {}), AGGREGATOR_RULES.pageCloseTimeout);
+                }
+            } finally {
+                await withTimeout(context.close().catch(() => {}), AGGREGATOR_RULES.contextCloseTimeout);
+            }
+        };
+
+        // Run all workers concurrently
+        const workers = Array.from({ length: CONCURRENCY }, () => worker());
+        await Promise.all(workers);
+
+        // SECOND PASS
+        if (reviewJobs.length > 0) {
+            console.log(`\n\n--- Starting Second Pass for ${reviewJobs.length} Review Jobs ---\n`);
+            const uniqueReviewUrls = new Set<string>();
+            const jobsToReview: FeedOpportunity[] = [];
+            const skipped403Jobs: FeedOpportunity[] = [];
+            let skipped403 = 0;
+            for (const j of reviewJobs) {
+                const url = j.sourceLink || j.applyLink;
+                if (!url) continue;
+                const normalized = normalizeUrl(url);
+                // First-pass 403s re-check 403 minutes later — skip the repeat,
+                // retry tomorrow. The reason stays for reporting.
+                if (reviewReasons.get(normalized) === 'blocked-403') {
+                    skipped403++;
+                    skipped403Jobs.push(j);
+                    continue;
+                }
+                if (!uniqueReviewUrls.has(normalized)) {
+                    uniqueReviewUrls.add(normalized);
+                    jobsToReview.push(j);
+                }
+            }
+            if (skipped403 > 0) {
+                console.log(`Skipping second pass for ${skipped403} already-403'd URL(s) — retry next run.`);
+            }
+            reviewJobs.length = 0; // clear, we will re-push if still failed
+            reviewJobs.push(...skipped403Jobs); // ...but keep the 403-skipped ones reported
+            
+            let secondPassChecked = 0;
+            const secondPassWorker = async () => {
+                const context = await browser.newContext({
+                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                });
+                
+                try {
+                    await context.route('**/*', (route) => {
+                        const type = route.request().resourceType();
+                        if (['image', 'font', 'media'].includes(type)) {
+                            route.abort();
+                        } else {
+                            route.continue();
+                        }
+                    });
+                    
+                    const page = await context.newPage();
+                    try {
+                        let opp: FeedOpportunity | undefined;
+                        while (jobsToReview.length > 0) {
+                            opp = jobsToReview.shift();
+                            if (!opp) continue;
+                            
+                            const currentChecked = ++secondPassChecked;
+                            const targetUrl = opp.sourceLink || opp.applyLink;
+                            if (!targetUrl) continue;
+
+                            console.log(`[Second Pass ${currentChecked}] Checking: ${opp.title} @ ${opp.company}`);
+                            let checkResult: SweeperCheckResult = { status: 'review' };
+                            try {
+                                checkResult = await Promise.race([
+                                    checkJob(page, targetUrl, true),
+                                    new Promise<SweeperCheckResult>((_, reject) => setTimeout(() => reject(new Error('HARD_TIMEOUT')), 60000))
+                                ]);
+                            } catch (err: any) {
+                                if (err.message === 'HARD_TIMEOUT') {
+                                    console.log(`  -> ⚠️ Hard timeout (stuck for 60s) for ${targetUrl}. Marking for review.`);
+                                    reviewReasons.set(normalizeUrl(targetUrl), 'navigation timed out (60s hard limit)');
+                                } else {
+                                    console.log(`  -> ⚠️ Unexpected error: ${err.message}`);
+                                }
+                            }
+                            
+                            const normalizedUrl = normalizeUrl(targetUrl);
+                            const duplicates = urlToOpps.get(normalizedUrl) || [opp];
+                            
+                            if (checkResult.status === 'expired') {
+                                console.log(`❌ EXPIRED: ${opp.title} @ ${targetUrl}`);
+                                expiredJobs.push(...duplicates);
+                            } else if (checkResult.status === 'review') {
+                                console.log(`⚠️ STILL NEEDS REVIEW: ${opp.title} @ ${targetUrl}`);
+                                reviewJobs.push(...duplicates);
+                            } else {
+                                console.log(`✅ LIVE: ${opp.title} @ ${targetUrl}`);
+                            }
+                            
+                            await page.waitForTimeout(1500);
+                        }
+                    } finally {
+                        await withTimeout(page.close().catch(() => {}), AGGREGATOR_RULES.pageCloseTimeout);
+                    }
+                } finally {
+                    await withTimeout(context.close().catch(() => {}), AGGREGATOR_RULES.contextCloseTimeout);
+                }
+            };
+
+            const secondPassWorkers = Array.from({ length: Math.min(CONCURRENCY, jobsToReview.length) }, () => secondPassWorker());
+            await Promise.all(secondPassWorkers);
+        }
+    } finally {
+        await withTimeout(browser.close().catch(() => {}), AGGREGATOR_RULES.browserCloseTimeout);
+    }
+
+    function escapeHtml(unsafe: string | null | undefined): string {
+        if (!unsafe) return '';
+        return String(unsafe)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    // Auto-expire confirmed dead jobs via API
+    const productionIds: string[] = [];
+    const discoveredIds: string[] = [];
+    const processedIds: string[] = [];
+
+    for (const job of expiredJobs) {
+        const id = job.slug || job.id;
+        if (!id) continue;
+        
+        if (job.type === 'discovered') {
+            discoveredIds.push(id);
+        } else if (job.type === 'processed') {
+            processedIds.push(id);
+        } else {
+            productionIds.push(id);
+        }
+    }
+
+    if (productionIds.length > 0 && API_URL && INTERNAL_API_SECRET) {
+        console.log(`\nCalling expire API for ${productionIds.length} dead production jobs...`);
+        // Retry transient 5xx (Cloudflare 524 on cold/loaded origin): confirmed
+        // verdicts must not be silently lost when the API hiccups.
+        let expireOk = false;
+        for (let attempt = 1; attempt <= 3 && !expireOk; attempt++) {
+        try {
+            if (attempt > 1) {
+                console.log(`Retrying expire API (attempt ${attempt}/3)...`);
+                await new Promise(r => setTimeout(r, 15000));
+            }
+            const res = await fetch(`${API_URL}/api/pipeline/expire-jobs`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': INTERNAL_API_SECRET,
+                },
+                body: JSON.stringify({ ids: productionIds }),
+            });
+            const responseText = await res.text();
+            if (res.ok) {
+                try {
+                    const json = JSON.parse(responseText) as { expired?: number; skipped?: number; notFound?: number };
+                    console.log(`Expire API result — expired: ${json.expired}, skipped: ${json.skipped}, notFound: ${json.notFound}`);
+                } catch {
+                    console.log(`Expire API result (raw text): ${responseText.slice(0, 200)}`);
+                }
+                expireOk = true;
+            } else if (res.status < 500 || res.status >= 600 || attempt === 3) {
+                console.error(`Expire API error: Status ${res.status} — ${responseText.slice(0, 300)}`);
+                break;
+            } else {
+                console.warn(`Expire API ${res.status}, will retry...`);
+            }
+        } catch (err) {
+            console.error('Failed to call expire API:', err instanceof Error ? err.message : String(err));
+        }
+        } // end expire retry loop
+    } else if (productionIds.length > 0) {
+        console.warn('API_URL or INTERNAL_API_SECRET not set — skipping auto-expire API call for production jobs.');
+    }
+
+    if ((discoveredIds.length > 0 || processedIds.length > 0) && INGESTION_URL) {
+        console.log(`\nCalling ingestion expire API for ${discoveredIds.length} discovered and ${processedIds.length} processed jobs...`);
+        try {
+            const res = await fetch(`${INGESTION_URL}/data/jobs/expire`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${INTERNAL_API_SECRET}`
+                },
+                body: JSON.stringify({ discoveredIds, processedIds }),
+            });
+            const responseText = await res.text();
+            if (res.ok) {
+                console.log(`Ingestion expire API result: ${responseText}`);
+            } else {
+                console.error(`Ingestion expire API error: Status ${res.status} — ${responseText}`);
+            }
+        } catch (err) {
+            console.error('Failed to call ingestion expire API:', err instanceof Error ? err.message : String(err));
+        }
+    }
+
+    // Community board handoff: expired external links go to the board's own
+    // bulk_mark_inactive issue flow (exact applyLink strings — its matcher is
+    // ===). Approval + deploy stay on that repo; nothing runs there.
+    const externalExpired = [...new Set(expiredJobs.filter(j => j.type === 'external' && j.applyLink).map(j => j.applyLink as string))];
+    if (externalExpired.length > 0) {
+        const boardToken = (process.env.JOBS_REPO_TOKEN || '').trim();
+        const boardRepo = (process.env.JOBS_REPO || 'FresherFlow/India-Jobs-Internships').trim();
+        if (!boardToken) {
+            console.warn(`JOBS_REPO_TOKEN not set — skipping board handoff for ${externalExpired.length} expired external job(s).`);
+        } else {
+            try {
+                const today = new Date().toISOString().slice(0, 10);
+                const body = `### Job Posting URLs\n${externalExpired.join('\n')}\n\n### Reason for marking as inactive\nExpired: confirmed dead by FresherFlow sweeper (${today}).`;
+                // Create the issue with bulk_mark_inactive only, so the board's
+                // `issues: [labeled]` workflow fires when we attach `approved`
+                // in the second call below (creating with both labels would
+                // only trigger `opened`, and the board workflow would never
+                // run — the expiry would never be applied).
+                const issueRes = await fetch(`https://api.github.com/repos/${boardRepo}/issues`, {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/vnd.github+json', 'Authorization': `Bearer ${boardToken}`, 'X-GitHub-Api-Version': '2022-11-28' },
+                    body: JSON.stringify({ title: `Bulk Marking Roles as Inactive (sweeper ${today})`, body, labels: ['bulk_mark_inactive'] }),
+                });
+                if (!issueRes.ok) {
+                    console.warn(`Board handoff: failed to create issue: ${issueRes.status} ${(await issueRes.text()).slice(0, 200)}`);
+                } else {
+                    const issue = await issueRes.json() as { number: number };
+                    const labelRes = await fetch(`https://api.github.com/repos/${boardRepo}/issues/${issue.number}/labels`, {
+                        method: 'POST',
+                        headers: { 'Accept': 'application/vnd.github+json', 'Authorization': `Bearer ${boardToken}`, 'X-GitHub-Api-Version': '2022-11-28' },
+                        body: JSON.stringify({ labels: ['approved'] }),
+                    });
+                    if (labelRes.ok) {
+                        console.log(`Board handoff: filed bulk_mark_inactive issue #${issue.number} and added the approved label so the board workflow triggers.`);
+                    } else {
+                        console.warn(`Board handoff: issue #${issue.number} created but approved label failed (${labelRes.status}) — maintainer action needed.`);
+                    }
+                }
+            } catch (err) {
+                console.warn('Board handoff failed (continuing):', err instanceof Error ? err.message : String(err));
+            }
+        }
+    }
+
+    // Single admin message for the run: outcome + how long it took.
+    // Sent exactly once, even when everything is healthy (heartbeat).
+    function formatDuration(ms: number): string {
+        const s = Math.max(0, Math.round(ms / 1000));
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        if (h > 0) return `${h}h ${m}m`;
+        if (m > 0) return `${m}m ${sec}s`;
+        return `${sec}s`;
+    }
+
+    {
+        const dur = formatDuration(Date.now() - runStart);
+        const liveCount = Math.max(0, opportunities.length - expiredJobs.length - reviewJobs.length);
+        let msg = `🧹 <b>Sweeper done in ${dur}</b>\n\n`;
+        msg += `Checked ${totalUniqueUrls} URLs (${opportunities.length} listings): ${liveCount} live`;
+        if (expiredJobs.length > 0 || reviewJobs.length > 0) {
+            msg += ` · ${expiredJobs.length} expired · ${reviewJobs.length} review`;
+        }
+
+        if (expiredJobs.length > 0) {
+            const expiredProduction = expiredJobs.filter(j => j.type !== 'discovered' && j.type !== 'processed');
+            const expiredProcessed = expiredJobs.filter(j => j.type === 'processed');
+            const expiredDiscovered = expiredJobs.filter(j => j.type === 'discovered');
+            msg += `\n\n🚨 <b>${expiredJobs.length} expired — auto-removed</b>`;
+            if (expiredProduction.length > 0) msg += `\n• Production: ${expiredProduction.length}`;
+            if (expiredProcessed.length > 0) msg += `\n• Processed (pending): ${expiredProcessed.length}`;
+            if (expiredDiscovered.length > 0) msg += `\n• Discovered (new): ${expiredDiscovered.length}`;
+        }
+
+        if (reviewJobs.length > 0) {
+            // Timeouts are retried next run — report them apart from genuine
+            // content ambiguity so stuck pages stop looking like verdict bugs.
+            const timedOut = reviewJobs.filter(j =>
+                (reviewReasons.get(normalizeUrl(j.sourceLink || j.applyLink || '')) || '').includes('timed out'));
+            const needsHuman = reviewJobs.length - timedOut.length;
+            if (needsHuman > 0) msg += `\n\n⚠️ <b>${needsHuman} need a human look</b> (Admin Dashboard)`;
+            if (timedOut.length > 0) msg += `\n⏱️ ${timedOut.length} timed out — retried next run, not verdicts`;
+        }
+
+        const boardBit = externalSourceStatus.startsWith('ok')
+            ? externalSourceStatus
+            : externalSourceStatus === 'not configured' ? 'skipped' : 'error';
+        msg += `\n\nSources: CDN ${cdnFeed.ok ? `ok (${cdnOpportunityCount})` : 'down'} · Ingestion ${ingestionSuccess ? 'ok' : 'down'} · Board ${boardBit}`;
+
+        console.log("Sending Telegram message:", msg);
+        await sendTelegramMessage(msg);
+    }
+
+    // Write summary for GitHub Actions
+    if (process.env.GITHUB_STEP_SUMMARY) {
+        const fs = await import('fs/promises');
+
+        let summary = `# 🧹 Job Sweeper Bot Results\n\n`;
+        summary += `| Metric | Value |\n`;
+        summary += `|---|---|\n`;
+        summary += `| **Total Active Opportunities Checked** | **${opportunities.length}** |\n`;
+        summary += `| **✅ Active & Live Jobs** | ${opportunities.length - expiredJobs.length - reviewJobs.length} |\n`;
+        summary += `| **❌ Expired Jobs Pruned** | ${expiredJobs.length} |\n`;
+        summary += `| **⚠️ Flagged for Review** | ${reviewJobs.length} |\n`;
+        const timedOutCount = reviewJobs.filter(j =>
+            (reviewReasons.get(normalizeUrl(j.sourceLink || j.applyLink || '')) || '').includes('timed out')).length;
+        if (timedOutCount > 0) summary += `| **⏱️ …of which timed out (retry, not verdicts)** | ${timedOutCount} |\n`;
+        summary += `\n`;
+
+        if (expiredJobs.length > 0) {
+            summary += `## ❌ Expired / Inactive Jobs (${expiredJobs.length})\n\n`;
+            summary += `| # | Role Title | Company | Status | Original Apply Link |\n`;
+            summary += `|---|---|---|---|---|\n`;
+            expiredJobs.forEach((j, idx) => {
+                const title = (j.title || 'Job').replace(/\|/g, '&#124;');
+                const company = (j.company || 'Company').replace(/\|/g, '&#124;');
+                const link = j.sourceLink || j.applyLink || '';
+                const linkMd = link ? `[Apply Link](${link})` : 'N/A';
+                summary += `| ${idx + 1} | ${title} | ${company} | ❌ Marked Expired | ${linkMd} |\n`;
+            });
+            summary += `\n`;
+        }
+
+        if (reviewJobs.length > 0) {
+            summary += `## ⚠️ Review Required Jobs (${reviewJobs.length})\n\n`;
+            summary += `| # | Role Title | Company | Flag Reason | Apply Link |\n`;
+            summary += `|---|---|---|---|---|\n`;
+            reviewJobs.forEach((j, idx) => {
+                const title = (j.title || 'Job').replace(/\|/g, '&#124;');
+                const company = (j.company || 'Company').replace(/\|/g, '&#124;');
+                const link = j.applyLink || j.sourceLink || '';
+                const linkMd = link ? `[Apply Link](${link})` : 'N/A';
+                summary += `| ${idx + 1} | ${title} | ${company} | Needs Review | ${linkMd} |\n`;
+            });
+            summary += `\n`;
+        }
+
+        if (expiredJobs.length === 0 && reviewJobs.length === 0) {
+            summary += `> ✅ **All verified opportunities are currently live and healthy.**\n`;
+        }
+
+        await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, summary);
+    }
+}
+
+run().catch(console.error);

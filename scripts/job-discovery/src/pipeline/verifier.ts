@@ -1,0 +1,479 @@
+import { DiscoveryState } from '@fresherflow/pipeline';
+import { withTimeout, AGGREGATOR_RULES } from '@fresherflow/pipeline';
+import { normalizeUrl } from '@fresherflow/pipeline';
+import { PLUGIN_REGISTRY, AtsJob, BOARD_SET } from '@fresherflow/plugins';
+import { parseJobUrl } from '@fresherflow/parser';
+import { isLocationIndiaOrRemote, scoreJobDescription } from '@fresherflow/utils';
+import { isJobLive } from '@fresherflow/pipeline';
+import { BAD_TITLE_REGEXES, loadRoleWords, titleHasValidRoleWord, isListingDowngrade, classifyFormCandidate } from '@fresherflow/pipeline';
+import { isRejectedApplyUrl } from '@fresherflow/pipeline';
+import { maybeCheckpointState } from './storage.js';
+
+export async function verifyCandidates(state: DiscoveryState, isDiscoveryRunning: () => boolean) {
+    const VERIFIER_CONCURRENCY = 3;
+    console.log(`\n=== Starting Verifier Daemon (${VERIFIER_CONCURRENCY} workers) ===\n`);
+
+
+    if (!state.browser) {
+        throw new Error("Browser is not initialized in DiscoveryState");
+    }
+
+    let checked = 0;
+    let live = 0;
+    let expired = 0;
+
+    const verifierWorker = async () => {
+        const context = await state.browser!.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport: { width: 1280, height: 720 }
+        });
+        let page = await context.newPage();
+
+        try {
+            while (true) {
+                if (state.isTimeUp()) {
+                    console.log(`\n[Timeout] ⏱️ Exceeded 80 minutes, gracefully stopping verifier daemon.`);
+                    break;
+                }
+                maybeCheckpointState(state);
+                const candidate = state.candidateQueue.shift();
+                
+                if (!candidate) {
+                    if (isDiscoveryRunning()) {
+                        await new Promise(r => setTimeout(r, 1000));
+                        continue;
+                    } else {
+                        break; // Discovery is done and queue is empty!
+                    }
+                }
+
+                console.log(`  [Verifier] Checking: ${candidate.applyLink}`);
+                checked++;
+                if (checked % 50 === 0) {
+                    console.log(`Verifier: ${checked} checked, ${live} live, ${expired} expired, ${state.candidateQueue.length} remaining`);
+                }
+
+                // Hard gate: aggregator site posts / govt portals / listing pages
+                // (e.g. acciojob.com/jobs, joinsaarthi.com/drives/off-campus, ssc.gov.in,
+                // jobs.dailypharmajobs.in/...) must never become jobs. Drop before any
+                // network work so they can't be marked LIVE or posted to social.
+                if (isRejectedApplyUrl(candidate.applyLink)) {
+                    console.log(`  -> ❌ Skipping: aggregator/govt/listing URL (${candidate.applyLink})`);
+                    const normRejected = normalizeUrl(candidate.applyLink);
+                    state.knownLinks.add(normRejected);
+                    state.visited["__discovered_apply_links__"].push(normRejected);
+                    state.rejectedReasons[normRejected] = 'Aggregator/govt/listing URL';
+                    if (state.visited["__discovered_apply_links__"].length > 50000) {
+                      state.visited["__discovered_apply_links__"] = state.visited["__discovered_apply_links__"].slice(-50000);
+                    }
+                    continue;
+                }
+                
+                // ── Bronze Layer Native API Fetch ─────────────────────────────────
+                let nativeData: { rawPayload: any; textForFiltering: string; locationsForFiltering: string[]; company: string; skills?: string[]; salaryMin?: number; salaryMax?: number; salaryCurrency?: string; salaryInterval?: string; workFromHomeType?: string; employmentType?: string; experienceLevel?: string; experienceYears?: number; batchYear?: string; degree?: string; department?: string; jobFunction?: string; postedAt?: string } | null = null;
+                const parsed = parseJobUrl(candidate.applyLink);
+                if (parsed && parsed.adapter) {
+                    const adapterKey = parsed.adapter.toLowerCase().replace('company-', '');
+                    const adapter = PLUGIN_REGISTRY[parsed.adapter.toLowerCase()] || PLUGIN_REGISTRY[adapterKey];
+                    if (adapter && typeof adapter.fetchJobDetails === 'function') {
+                        try {
+                            const details = await adapter.fetchJobDetails({
+                                applyLink: candidate.applyLink,
+                                title: candidate.aggregatorTitle || '',
+                                company: candidate.company || parsed.company,
+                                source: candidate.source,
+                                sourceType: candidate.sourceType,
+                            } as AtsJob, undefined);
+                            
+                            if (details) {
+                                const fullText = typeof details === 'string' ? details : details.text;
+                                const locations = typeof details === 'string' ? [] : (details.locations || []);
+                                const title = typeof details === 'string' ? candidate.aggregatorTitle || 'Unknown API Job' : (details.title || candidate.aggregatorTitle || 'Unknown API Job');
+                                const companyName = typeof details === 'string' ? candidate.company : (details.company || candidate.company);
+                                
+                                nativeData = {
+                                    rawPayload: { title, html: typeof details === 'string' ? '' : details.html },
+                                    textForFiltering: fullText,
+                                    locationsForFiltering: locations,
+                                    company: companyName || 'Unknown Company',
+                                    // Structured fields surfaced by the adapter
+                                    skills: (details as any)?.skills || undefined,
+                                    salaryMin: (details as any)?.salaryMin ?? (details as any)?.compensation?.minAmount,
+                                    salaryMax: (details as any)?.salaryMax ?? (details as any)?.compensation?.maxAmount,
+                                    salaryCurrency: (details as any)?.salaryCurrency ?? (details as any)?.compensation?.currency,
+                                    salaryInterval: (details as any)?.salaryInterval ?? (details as any)?.compensation?.interval,
+                                    workFromHomeType: (details as any)?.workFromHomeType,
+                                    employmentType: (details as any)?.employmentType,
+                                    experienceLevel: (details as any)?.experienceLevel,
+                                    experienceYears: (details as any)?.experienceYears,
+                                    batchYear: (details as any)?.batchYear,
+                                    degree: (details as any)?.degree,
+                                    department: (details as any)?.department,
+                                    jobFunction: (details as any)?.jobFunction,
+                                    postedAt: (details as any)?.postedAt,
+                                };
+                            }
+                        } catch (e: any) {
+                            console.log(`  -> ⚠️ Plugin API fetch failed for ${candidate.applyLink}: ${e.message}`);
+                        }
+                    }
+                }
+                
+                if (nativeData) {
+                    console.log(`  ⚡ FAST PATH (Native API via Plugin): ${candidate.applyLink}`);
+                    const isIndiaRemote = nativeData.locationsForFiltering.length === 0 || 
+                                          nativeData.locationsForFiltering.some(l => isLocationIndiaOrRemote(l));
+                    
+                    if (!isIndiaRemote) {
+                        console.log(`  -> ❌ Skipping API job: Foreign location`);
+                        state.visited["__discovered_apply_links__"].push(normalizeUrl(candidate.applyLink));
+                        continue;
+                    }
+
+                    // Check for dead API responses
+                    const apiText = nativeData.textForFiltering || '';
+                    if (apiText === '{"error":"Job not found"}' || apiText.includes('Job not found') || apiText.length < 100) {
+                        console.log(`  -> ❌ Skipping API job: Dead or empty response (${apiText.length} chars)`);
+                        state.visited["__discovered_apply_links__"].push(normalizeUrl(candidate.applyLink));
+                        continue;
+                    }
+
+                    // Aggregator/channel jobs must not be killed on drive words in the
+                    // title even here — when the API has no clean title we fall back to
+                    // the wrapper title ("TCS Mass Hiring"), and the real apply page is
+                    // what should decide. Only ATS-direct jobs keep the drive blocker.
+                    const scoreOpts = candidate.sourceType === 'AGGREGATOR' ? { skipDriveBlocker: true } : {};
+                    const atsScore = scoreJobDescription(nativeData.rawPayload.title || candidate.aggregatorTitle || 'Unknown', apiText, scoreOpts);
+                    if (atsScore.verdict === 'REJECT') {
+                        console.log(`  -> ❌ Skipping API job: Rejected by scorer (Score: ${atsScore.score})`);
+                        state.visited["__discovered_apply_links__"].push(normalizeUrl(candidate.applyLink));
+                        continue;
+                    }
+
+                    const titleToCheck = nativeData.rawPayload.title || candidate.aggregatorTitle || 'Unknown';
+                    const isBadTitle = BAD_TITLE_REGEXES.some(regex => regex.test(titleToCheck));
+                    if (isBadTitle) {
+                        console.log(`  -> ❌ Skipping API job: Bad title (${titleToCheck})`);
+                        state.visited["__discovered_apply_links__"].push(normalizeUrl(candidate.applyLink));
+                        continue;
+                    }
+
+                    // Role title validation: only for ATS sources (skip boards/aggregators/Telegram/Getro)
+                    const sourceIsBoard = candidate.source ? BOARD_SET.has(candidate.source) : false;
+                    if (candidate.sourceType === 'ATS' && !sourceIsBoard) {
+                        const rw = await loadRoleWords();
+                        if (rw.size > 0 && !titleHasValidRoleWord(titleToCheck, rw)) {
+                            console.log(`  -> ❌ Skipping API job: No role match (${titleToCheck})`);
+                            state.visited["__discovered_apply_links__"].push(normalizeUrl(candidate.applyLink));
+                            continue;
+                        }
+                    }
+
+                    console.log(`  ✅ LIVE (API): ${candidate.applyLink}`);
+                    const normalizedApplyLink = normalizeUrl(candidate.applyLink);
+                    state.visited["__discovered_apply_links__"].push(normalizedApplyLink);
+                    if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"] = state.visited["__discovered_apply_links__"].slice(-50000);
+
+                    // Register newly discovered ATS board from dorker — only if the job is confirmed live
+                    const c = candidate as any;
+                    if (c.pendingBoardProvider && c.pendingBoardId) {
+                        if (!state.atsRegistry[c.pendingBoardProvider]) state.atsRegistry[c.pendingBoardProvider] = {};
+                        const providerRegistry = state.atsRegistry[c.pendingBoardProvider]!;
+                        if (!providerRegistry[c.pendingBoardId]) {
+                            providerRegistry[c.pendingBoardId] = c.pendingBoardName || c.pendingBoardId;
+                            state.registryModified = true;
+                            console.log(`  🌟 [Dorker→Registry] NEW board confirmed live: ${c.pendingBoardProvider}/${c.pendingBoardId} (${c.pendingBoardName})`);
+                        }
+                    }
+
+                    state.newJobsFound.push({
+                        title: nativeData.rawPayload.title || candidate.aggregatorTitle || 'Unknown API Job',
+                        applyLink: candidate.applyLink,
+                        source: candidate.source,
+                        sourceType: candidate.sourceType,
+                        discoveredAt: new Date().toISOString(),
+                        reviewRequired: candidate.isAggregatorReview || false,
+                        fromSafetyWindow: candidate.fromSafetyWindow,
+                        safetySite: candidate.safetySite,
+                        aggregatorUrl: candidate.aggregatorUrl,
+                        aggregatorTitle: candidate.aggregatorTitle,
+                        company: nativeData.company,
+                        atsText: nativeData.textForFiltering,
+                        rawPayload: nativeData.rawPayload,
+                        rawHtml: nativeData.rawPayload.html || nativeData.textForFiltering,
+                        skills: nativeData.skills,
+                        salaryMin: nativeData.salaryMin,
+                        salaryMax: nativeData.salaryMax,
+                        salaryCurrency: nativeData.salaryCurrency,
+                        salaryInterval: nativeData.salaryInterval,
+                        workFromHomeType: nativeData.workFromHomeType,
+                        employmentType: nativeData.employmentType,
+                        experienceLevel: nativeData.experienceLevel,
+                        experienceYears: nativeData.experienceYears,
+                        batchYear: nativeData.batchYear,
+                        degree: nativeData.degree,
+                        department: nativeData.department,
+                        jobFunction: nativeData.jobFunction,
+                        postedAt: nativeData.postedAt
+                    });
+                    live++;
+                    continue; // Skip Playwright completely!
+                }
+
+                // ── Dead-page fast path (HEAD precheck, fail open) ───────────────
+                // Plain HEAD fetch before any browser work: 404/410 short-circuits
+                // to the existing expired path; anything else falls through to the
+                // browser unchanged.
+                try {
+                    const precheckProto = new URL(candidate.applyLink).protocol;
+                    if (precheckProto === 'http:' || precheckProto === 'https:') {
+                        const ctrl = new AbortController();
+                        const precheckTimer = setTimeout(() => ctrl.abort(), 8000);
+                        try {
+                            const headRes = await fetch(candidate.applyLink, {
+                                method: 'HEAD',
+                                redirect: 'follow',
+                                signal: ctrl.signal,
+                                headers: {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                },
+                            });
+                            if (headRes.status === 404 || headRes.status === 410) {
+                                console.log(`  ❌ Page unreachable (HTTP ${headRes.status}) — job expired/removed.`);
+                                const normalizedPrecheck = normalizeUrl(candidate.applyLink);
+                                state.visited["__discovered_apply_links__"].push(normalizedPrecheck);
+                                if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"] = state.visited["__discovered_apply_links__"].slice(-50000);
+                                state.rejectedReasons[normalizedPrecheck] = `HTTP status code ${headRes.status}`;
+                                expired++;
+                                continue;
+                            }
+                        } finally {
+                            clearTimeout(precheckTimer);
+                        }
+                    }
+                } catch {
+                    // Fail open: any precheck error/timeout → browser path unchanged.
+                }
+
+                // ── Fallback to Playwright (Non-API) ──────────────────────────────
+                // Close and recreate page to avoid stale browser state from previous timeout.
+                // Bounded: abandon/skip instead of hanging the daemon on a wedged page.
+                if (await withTimeout(page.close().catch(() => {}), AGGREGATOR_RULES.pageCloseTimeout) === null) {
+                    console.log(`  ⚠️ page.close() stuck >${AGGREGATOR_RULES.pageCloseTimeout / 1000}s — abandoning page`);
+                }
+                const freshPage = await withTimeout(context.newPage(), AGGREGATOR_RULES.pageCreateTimeout);
+                if (!freshPage) {
+                    console.log(`  ⚠️ context.newPage() stuck >${AGGREGATOR_RULES.pageCreateTimeout / 1000}s — skipping candidate`);
+                    continue;
+                }
+                page = freshPage;
+                let checkResult = await isJobLive(page, candidate.applyLink);
+                if (candidate.isTestBypass) {
+                    checkResult = { live: true, status: 'live', finalUrl: candidate.applyLink, atsText: checkResult.atsText || '' };
+                }
+
+                if (checkResult.live) {
+                    let actualApplyLink = checkResult.finalUrl || candidate.applyLink;
+
+                    // Fix SmartRecruiters API URLs — convert internal API URLs to public job page URLs
+                    if (actualApplyLink.includes('api.smartrecruiters.com')) {
+                        try {
+                            const u = new URL(actualApplyLink);
+                            const parts = u.pathname.split('/').filter(Boolean);
+                            const compIdx = parts.indexOf('companies');
+                            const postIdx = parts.indexOf('postings');
+                            const slug = compIdx !== -1 ? parts[compIdx + 1] : '';
+                            const jobId = postIdx !== -1 ? parts[postIdx + 1] : '';
+                            if (slug && jobId) {
+                                actualApplyLink = `https://jobs.smartrecruiters.com/${slug}/${jobId}`;
+                                console.log(`  -> Fixed SR API URL to public URL: ${actualApplyLink}`);
+                            }
+                        } catch {}
+                    }
+
+                    try {
+                        const parsedUrl = new URL(actualApplyLink);
+                        const host = parsedUrl.hostname.toLowerCase();
+                        const pathname = parsedUrl.pathname.toLowerCase();
+                        if (host === 'accounts.google.com' || (host === 'google.com' && pathname.startsWith('/accounts'))) {
+                            actualApplyLink = candidate.applyLink;
+                        }
+                    } catch {}
+                    // Listing-vs-requisition: a queued requisition that lands on a
+                    // search/listing page (e.g. bare .../External_Career_Site with
+                    // no /job/ id) must not be saved as the job. Pure predicate
+                    // (tested): only fires when the final URL differs from what
+                    // was queued — same-URL and same-requisition redirects pass.
+                    if (isListingDowngrade(candidate.applyLink, actualApplyLink)) {
+                        console.log(`  -> ❌ Skipping job: final URL is a listing/search page, not the queued requisition (${actualApplyLink})`);
+                        const normalizedListing = normalizeUrl(actualApplyLink);
+                        state.visited["__discovered_apply_links__"].push(normalizedListing);
+                        if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"].slice(-50000);
+                        state.rejectedReasons[normalizedListing] = `Redirected to listing page: ${actualApplyLink}`;
+                        continue;
+                    }
+                    console.log(`  ✅ VERIFIED LIVE: ${actualApplyLink}`);
+
+                    // Register newly discovered ATS board from dorker — only if confirmed live via Playwright
+                    const cb = candidate as any;
+                    if (cb.pendingBoardProvider && cb.pendingBoardId) {
+                        if (!state.atsRegistry[cb.pendingBoardProvider]) state.atsRegistry[cb.pendingBoardProvider] = {};
+                        const providerRegistryCb = state.atsRegistry[cb.pendingBoardProvider]!;
+                        if (!providerRegistryCb[cb.pendingBoardId]) {
+                            providerRegistryCb[cb.pendingBoardId] = cb.pendingBoardName || cb.pendingBoardId;
+                            state.registryModified = true;
+                            console.log(`  🌟 [Dorker→Registry] NEW board confirmed live: ${cb.pendingBoardProvider}/${cb.pendingBoardId} (${cb.pendingBoardName})`);
+                        }
+                    }
+
+                    let jobTitle = (await withTimeout(page.title().catch(() => ""), AGGREGATOR_RULES.pageTitleTimeout)) ?? "";
+                    jobTitle = jobTitle.replace(/( - Workday| - Lever| - Greenhouse| Careers| - Jobs| - Job Detail.*| - Careers Marketplace.*| - Harman.*| - Siemens.*| - \d+ | \| .*)$/i, '').trim();
+                    // Clean up trailing dashes from stripping
+                    jobTitle = jobTitle.replace(/( -)+$/, '').trim();
+
+                    if (!jobTitle || jobTitle.length < 4 || /^(login|sign in|welcome|job details|job details page|careers|opportunities|skip to content|careers at .+|jobs at .+)$/i.test(jobTitle)) {
+                        jobTitle = candidate.aggregatorTitle || "Job Title Unknown";
+                    }
+
+                    if (jobTitle.toLowerCase().includes("unknown")) {
+                        console.log(`  -> ❌ Skipping job: Unknown Job Title`);
+                        const normalizedApplyLink = normalizeUrl(actualApplyLink);
+                        state.visited["__discovered_apply_links__"].push(normalizedApplyLink);
+                        if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"] = state.visited["__discovered_apply_links__"].slice(-50000);
+                        state.rejectedReasons[normalizedApplyLink] = `Unknown Job Title`;
+                        continue;
+                    }
+
+                    const isBadTitle = BAD_TITLE_REGEXES.some(regex => regex.test(jobTitle));
+                    if (isBadTitle) {
+                        console.log(`  -> ❌ Skipping job: Bad title (${jobTitle})`);
+                        const normalizedApplyLink = normalizeUrl(actualApplyLink);
+                        state.visited["__discovered_apply_links__"].push(normalizeUrl(candidate.applyLink));
+                        if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"] = state.visited["__discovered_apply_links__"].slice(-50000);
+                        state.rejectedReasons[normalizedApplyLink] = `Bad Job Title: ${jobTitle}`;
+                        continue;
+                    }
+
+                    // Role title validation: only for ATS sources (skip boards/aggregators/Telegram/Getro)
+                    const sourceIsBoard2 = candidate.source ? BOARD_SET.has(candidate.source) : false;
+                    if (candidate.sourceType === 'ATS' && !sourceIsBoard2) {
+                        const rw = await loadRoleWords();
+                        if (rw.size > 0 && !titleHasValidRoleWord(jobTitle, rw)) {
+                            console.log(`  -> ❌ Skipping job: No role match (${jobTitle})`);
+                            const normalizedApplyLink = normalizeUrl(actualApplyLink);
+                            state.visited["__discovered_apply_links__"].push(normalizedApplyLink);
+                            if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"].slice(-50000);
+                            state.rejectedReasons[normalizedApplyLink] = `No role match: ${jobTitle}`;
+                            continue;
+                        }
+                    }
+
+                    // Reject thin content (same threshold as processor)
+                    const bodyText = checkResult.atsText || '';
+                    if (bodyText.length > 0 && bodyText.length < 600 && !candidate.isAggregatorReview) {
+                        console.log(`  -> ❌ Skipping job: Thin content (${bodyText.length} chars)`);
+                        const normalizedApplyLink2 = normalizeUrl(actualApplyLink);
+                        state.visited["__discovered_apply_links__"].push(normalizedApplyLink2);
+                        if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"] = state.visited["__discovered_apply_links__"].slice(-50000);
+                        state.rejectedReasons[normalizedApplyLink2] = `Thin content: ${bodyText.length} chars`;
+                        continue;
+                    }
+
+                    if (bodyText) {
+                        // Aggregator/channel jobs: never kill on drive words in the title
+                        // (which may be the wrapper's "Mass Hiring" fallback). Only ATS-direct
+                        // jobs keep the drive blocker. Seniority/experience in the real body
+                        // still blocks via score < 0.
+                        const scoreOpts = candidate.sourceType === 'AGGREGATOR' ? { skipDriveBlocker: true } : {};
+                        const atsScore = scoreJobDescription(jobTitle, bodyText, scoreOpts);
+                        if (atsScore.verdict === 'REJECT') {
+                            console.log(`  -> ❌ Skipping job: Rejected by scorer (Score: ${atsScore.score})`);
+                            continue;
+                        }
+                    }
+
+                    // Staleness + provenance (P1 #1, Gates 3+4) — pure classifier,
+                    // unit-tested. Strong dates decide alone; bare forms need
+                    // missing context on both titles; weak signals pass through.
+                    const formVerdict = classifyFormCandidate({
+                        applyLink: actualApplyLink,
+                        jobTitle,
+                        aggregatorTitle: candidate.aggregatorTitle,
+                        now: new Date(),
+                    });
+                    if (formVerdict.verdict !== 'ok') {
+                        const why = formVerdict.verdict === 'stale'
+                            ? `stale posting date (${formVerdict.detail})`
+                            : `bare form without job context (${jobTitle})`;
+                        console.log(`  -> ❌ Skipping job: ${why}`);
+                        const normalizedGated = normalizeUrl(actualApplyLink);
+                        state.visited["__discovered_apply_links__"].push(normalizedGated);
+                        if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"].slice(-50000);
+                        state.rejectedReasons[normalizedGated] = why;
+                        continue;
+                    }
+
+                    const normalizedApplyLink = normalizeUrl(actualApplyLink);
+                    state.visited["__discovered_apply_links__"].push(normalizedApplyLink);
+                    if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"] = state.visited["__discovered_apply_links__"].slice(-50000);
+
+                    state.newJobsFound.push({
+                        title: jobTitle,
+                        applyLink: actualApplyLink,
+                        source: candidate.source,
+                        sourceType: candidate.sourceType,
+                        discoveredAt: new Date().toISOString(),
+                        reviewRequired: candidate.isAggregatorReview || false,
+                        fromSafetyWindow: candidate.fromSafetyWindow,
+                        safetySite: candidate.safetySite,
+                        aggregatorUrl: candidate.aggregatorUrl,
+                        aggregatorTitle: candidate.aggregatorTitle,
+                        atsText: checkResult.atsText || '',
+                        company: candidate.company,
+                        isTestBypass: candidate.isTestBypass,
+                        rawHtml: checkResult.atsText || '' // Fallback raw HTML
+                    });
+                    live++;
+                } else {
+                    const normalizedApplyLink = normalizeUrl(candidate.applyLink);
+                    if (checkResult.status === 'failed') {
+                        console.log(`  ⚠️ Check FAILED (network/timeout) — will retry next run.`);
+                        state.knownLinks.delete(normalizedApplyLink);
+                    } else {
+                        // Scorer rejections mean the page loaded fine but the role is
+                        // senior/experienced — a "not a fresher job" decision, NOT an
+                        // expired posting. Report the two cases differently.
+                        const rejectReason = checkResult.rejectReason || 'Unknown reason';
+                        const isSeniorReject = /scorer rejected/i.test(rejectReason);
+                        console.log(
+                            isSeniorReject
+                                ? `  👨‍💼 Not a fresher job — discarded (${rejectReason})`
+                                : `  ⏰ Expired / unavailable — discarded (${rejectReason})`,
+                        );
+                        state.visited["__discovered_apply_links__"].push(normalizedApplyLink);
+                        if (state.visited["__discovered_apply_links__"].length > 50000) state.visited["__discovered_apply_links__"] = state.visited["__discovered_apply_links__"].slice(-50000);
+                        state.rejectedReasons[normalizedApplyLink] = checkResult.rejectReason || 'Unknown reason';
+                        expired++;
+                    }
+                }
+            }
+        } finally {
+            if (await withTimeout(page.close().catch(() => {}), AGGREGATOR_RULES.pageCloseTimeout) === null) {
+                console.log(`  ⚠️ verifier-teardown page.close() stuck >${AGGREGATOR_RULES.pageCloseTimeout / 1000}s — abandoning`);
+            }
+            if (await withTimeout(context.close(), AGGREGATOR_RULES.contextCloseTimeout) === null) {
+                console.log(`  ⚠️ verifier-teardown context.close() stuck >${AGGREGATOR_RULES.contextCloseTimeout / 1000}s — abandoning`);
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: VERIFIER_CONCURRENCY }, () => verifierWorker()));
+    
+    const MAX_REJECTED = 50000;
+    const keys = Object.keys(state.rejectedReasons);
+    if (keys.length > MAX_REJECTED) {
+        const keysToDelete = keys.slice(0, keys.length - MAX_REJECTED);
+        for (const k of keysToDelete) {
+            delete state.rejectedReasons[k];
+        }
+    }
+}

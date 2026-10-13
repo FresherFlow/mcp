@@ -1,0 +1,473 @@
+import { apiClient } from './client';
+import type { Opportunity } from '@fresherflow/types';
+
+/**
+ * Body accepted by `POST /api/admin/opportunities` and
+ * `PUT /api/admin/opportunities/:id`.
+ *
+ * This is the declared return type of `buildOpportunityPayload`
+ * (`features/admin/opportunities/opportunityPayload.ts`). It is spelled out
+ * instead of imported because `lib/` must not depend on `features/` — see the
+ * import-direction rule in `apps/web/AGENTS.md`. The builder owns the shape;
+ * this names it at the transport boundary.
+ *
+ * Drift is still caught: a named `interface` is not assignable to
+ * `Record<string, unknown>`, so narrowing the builder's return type breaks the
+ * `useOpportunityFormHandlers` call site at compile time instead of silently
+ * diverging.
+ */
+export type OpportunityWritePayload = Record<string, unknown>;
+
+/** Response envelope both opportunity write endpoints return. */
+export type OpportunityWriteResponse = {
+    opportunity: Opportunity;
+    message?: string;
+};
+
+// Admin API methods using the centralized client (cookie-based auth)
+export const adminApi = {
+    // Users
+    getUsers: () =>
+        apiClient('/api/admin/users'),
+
+    setUserStatus: (userId: string, status: 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED', reason?: string) =>
+        apiClient(`/api/admin/users/${userId}/status`, {
+            method: 'POST',
+            body: JSON.stringify({ status, reason })
+        }),
+
+    // Moderator role management (admin-only: moderator.manage)
+    getModerators: () =>
+        apiClient<{ moderators: Array<{ id: string; fullName: string | null; username: string | null; email: string | null; role: string; status: 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED'; trustLevel: string; assignedAt: string; assignedBy: string | null }> }>('/api/admin/moderators'),
+
+    // Staff identity: works for admin sessions AND moderator user sessions.
+    // The web admin shell uses this (not the keys-only endpoint) so
+    // bare-grant moderators are still recognized as moderators.
+    getModeratorMe: () =>
+        apiClient<{ userId: string; isModerator: boolean; permissions: string[] }>(
+            '/api/admin/moderators/me',
+        ),
+
+    grantModerator: (userId: string, reason?: string) =>
+        apiClient(`/api/admin/moderators/${encodeURIComponent(userId)}`, {
+            method: 'POST',
+            body: JSON.stringify({ reason })
+        }),
+
+    revokeModerator: (userId: string) =>
+        apiClient(`/api/admin/moderators/${encodeURIComponent(userId)}`, {
+            method: 'DELETE'
+        }),
+
+    // Audit trail (admin-only: audit.view)
+    getAuditLog: (params?: { actorId?: string; action?: string; targetId?: string; page?: number; limit?: number }) => {
+        const query = new URLSearchParams();
+        if (params?.actorId) query.append('actorId', params.actorId);
+        if (params?.action) query.append('action', params.action);
+        if (params?.targetId) query.append('targetId', params.targetId);
+        if (params?.page !== undefined) query.append('page', String(params.page));
+        if (params?.limit !== undefined) query.append('limit', String(params.limit));
+        const queryString = query.toString();
+        return apiClient(`/api/admin/audit${queryString ? `?${queryString}` : ''}`);
+    },
+
+    // Community triage queues shared by the admin and moderator areas
+    getModerationQueue: (params?: { kind?: 'interview' | 'update' | 'hiring-post'; status?: 'ACTIVE' | 'ARCHIVED' | 'DELETED'; page?: number; limit?: number }) => {
+        const query = new URLSearchParams();
+        if (params?.kind) query.append('kind', params.kind);
+        if (params?.status) query.append('status', params.status);
+        if (params?.page !== undefined) query.append('page', String(params.page));
+        if (params?.limit !== undefined) query.append('limit', String(params.limit));
+        const queryString = query.toString();
+        return apiClient(`/api/admin/community/moderation-queue${queryString ? `?${queryString}` : ''}`);
+    },
+
+    // Prisma report triage queue (canonical moderation queue)
+    getReports: (params?: { status?: string; page?: number; limit?: number }) => {
+        const query = new URLSearchParams();
+        if (params?.status) query.append('status', params.status);
+        if (params?.page !== undefined) query.append('page', String(params.page));
+        if (params?.limit !== undefined) query.append('limit', String(params.limit));
+        const queryString = query.toString();
+        return apiClient(`/api/admin/reports${queryString ? `?${queryString}` : ''}`);
+    },
+
+    resolveReport: (id: string, note?: string) =>
+        apiClient(`/api/admin/reports/${id}/resolve`, {
+            method: 'POST',
+            body: JSON.stringify({ note })
+        }),
+
+    dismissReport: (id: string, note?: string) =>
+        apiClient(`/api/admin/reports/${id}/dismiss`, {
+            method: 'POST',
+            body: JSON.stringify({ note })
+        }),
+
+    // Community moderation (posts / comments / interviews / updates)
+    adminDeleteCommunityPost: (id: string, reason?: string) =>
+        apiClient(`/api/admin/community/posts/${id}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ reason: reason || 'Removed by moderator' })
+        }),
+
+    adminSpamCommunityPost: (id: string, reason?: string) =>
+        apiClient(`/api/admin/community/posts/${id}/spam`, {
+            method: 'POST',
+            body: JSON.stringify({ reason: reason || 'Flagged as spam' })
+        }),
+
+    adminDeleteCommunityComment: (commentId: string, reason?: string) =>
+        apiClient(`/api/admin/community/posts/comments/${commentId}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ reason: reason || 'Removed by moderator' })
+        }),
+
+    adminDeleteJobComment: (commentId: string, reason?: string) =>
+        apiClient(`/api/admin/community/comments/${commentId}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ reason: reason || 'Removed by moderator' })
+        }),
+
+    adminDeleteInterview: (id: string, reason?: string) =>
+        apiClient(`/api/admin/community/interviews/${id}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ reason: reason || 'Removed by moderator' })
+        }),
+
+    adminSpamInterview: (id: string, reason?: string) =>
+        apiClient(`/api/admin/community/interviews/${id}/spam`, {
+            method: 'POST',
+            body: JSON.stringify({ reason: reason || 'Flagged as spam' })
+        }),
+
+    adminDeleteUpdate: (id: string, reason?: string) =>
+        apiClient(`/api/admin/community/updates/${id}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ reason: reason || 'Removed by moderator' })
+        }),
+
+    // Analytics overview
+    getAnalyticsOverview: () =>
+        apiClient('/api/admin/analytics/overview'),
+
+    // System health stats
+    getHealthStats: () =>
+        apiClient('/api/admin/system/health-stats'),
+
+    // Summary stats
+    getOpportunitiesSummary: () =>
+        apiClient('/api/admin/opportunities/summary'),
+
+    // Create new opportunity
+     
+    createOpportunity: (data: OpportunityWritePayload) =>
+        apiClient<OpportunityWriteResponse>('/api/admin/opportunities', {
+            method: 'POST',
+            body: JSON.stringify(data)
+        }),
+
+    // Get all opportunities (with filters)
+    getOpportunities: (filters?: { type?: string; sector?: string; status?: string; linkHealth?: 'HEALTHY' | 'RETRYING' | 'BROKEN'; activeOnly?: boolean; limit?: number; offset?: number; q?: string; sort?: string }) => {
+        const query = new URLSearchParams();
+        if (filters?.type) query.append('type', filters.type);
+        if (filters?.sector) query.append('sector', filters.sector);
+        if (filters?.status) query.append('status', filters.status);
+        if (filters?.linkHealth) query.append('linkHealth', filters.linkHealth);
+        if (filters?.activeOnly) query.append('activeOnly', 'true');
+        if (filters?.limit !== undefined) query.append('limit', String(filters.limit));
+        if (filters?.offset !== undefined) query.append('offset', String(filters.offset));
+        if (filters?.q) query.append('q', filters.q);
+        if (filters?.sort) query.append('sort', filters.sort);
+
+        const queryString = query.toString();
+        return apiClient(`/api/admin/opportunities${queryString ? `?${queryString}` : ''}`);
+    },
+
+    // Get single opportunity
+    getOpportunity: (id: string) =>
+        apiClient(`/api/admin/opportunities/${id}`),
+
+    getOpportunityEvents: (id: string) =>
+        apiClient(`/api/admin/opportunities/${id}/events`),
+
+    createOpportunityEvent: (id: string, data: { eventType: string; eventDate: string; title: string; notes?: string; sourceLink?: string }) =>
+        apiClient(`/api/admin/opportunities/${id}/events`, {
+            method: 'POST',
+            body: JSON.stringify(data)
+        }),
+
+    updateOpportunityEvent: (id: string, eventId: string, data: Partial<{ eventType: string; eventDate: string; title: string; notes?: string; sourceLink?: string }>) =>
+        apiClient(`/api/admin/opportunities/${id}/events/${eventId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(data)
+        }),
+
+    deleteOpportunityEvent: (id: string, eventId: string) =>
+        apiClient(`/api/admin/opportunities/${id}/events/${eventId}`, {
+            method: 'DELETE'
+        }),
+
+    // Update opportunity (full edit form)
+     
+    updateOpportunity: (id: string, data: OpportunityWritePayload) =>
+        apiClient<OpportunityWriteResponse>(`/api/admin/opportunities/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(data)
+        }),
+
+    // Lightweight status-only update (quick Publish / Expire from table)
+    updateOpportunityStatus: (id: string, status: string) =>
+        apiClient(`/api/admin/opportunities/${id}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status })
+        }),
+
+    // Expire opportunity
+    expireOpportunity: (id: string) =>
+        apiClient(`/api/admin/opportunities/${id}/expire`, {
+            method: 'POST'
+        }),
+
+    // Delete opportunity (soft delete with reason)
+    deleteOpportunity: (id: string, reason?: string) =>
+        apiClient(`/api/admin/opportunities/${id}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ reason: reason || 'Deleted by admin' })
+        }),
+
+    // Hard delete opportunity (permanent)
+    hardDeleteOpportunity: (id: string) =>
+        apiClient(`/api/admin/opportunities/${id}/hard`, {
+            method: 'DELETE'
+        }),
+
+    restoreOpportunity: (id: string) =>
+        apiClient(`/api/admin/opportunities/${id}/restore`, {
+            method: 'POST'
+        }),
+
+    // Reject a draft — sets deletionReason so contributor sees it in "My Shares"
+    rejectOpportunity: (id: string, reason: string) =>
+        apiClient(`/api/admin/opportunities/${id}/reject`, {
+            method: 'POST',
+            body: JSON.stringify({ reason })
+        }),
+
+    // Get all feedback
+    getFeedback: () =>
+        apiClient('/api/admin/feedback'),
+
+    // Feedback/report alerts count since timestamp (ISO)
+    getFeedbackAlerts: (since?: string) => {
+        const query = new URLSearchParams();
+        if (since) query.set('since', since);
+        const queryString = query.toString();
+        return apiClient(`/api/admin/feedback/alerts${queryString ? `?${queryString}` : ''}`);
+    },
+
+    // Get app feedback
+    getAppFeedback: () =>
+        apiClient('/api/admin/app-feedback'),
+
+    // System observability metrics
+    getSystemMetrics: () =>
+        apiClient('/api/admin/system/metrics'),
+
+    getFirebaseToken: () =>
+        apiClient('/api/admin/auth/firebase-token'),
+
+    // Canonical dashboard metrics
+    getSystemMetricsV2: (window: '24h' | '7d' | '30d' = '30d') =>
+        apiClient(`/api/admin/system/metrics-v2?window=${window}`),
+
+    refreshSystemMetricsV2: (window: '24h' | '7d' | '30d' = '30d') =>
+        apiClient(`/api/admin/system/metrics-v2/refresh?window=${window}`, {
+            method: 'POST'
+        }),
+
+    getDeliveryControls: () =>
+        apiClient('/api/admin/system/delivery-controls'),
+
+    updateDeliveryControls: (data: {
+        socialAutoPostingEnabled?: boolean;
+        userAlertsEnabled?: boolean;
+        userEmailNotificationsEnabled?: boolean;
+    }) =>
+        apiClient('/api/admin/system/delivery-controls', {
+            method: 'PUT',
+            body: JSON.stringify(data)
+        }),
+
+    // Alert dispatch observability
+    getAlertDispatchLogs: (filters?: {
+        status?: 'INITIATED' | 'SENT' | 'FAILED' | 'SKIPPED';
+        kind?: 'DAILY_DIGEST' | 'CLOSING_SOON' | 'HIGHLIGHT' | 'APP_UPDATE' | 'NEW_JOB' | 'EVENT_REMINDER';
+        channel?: 'EMAIL' | 'APP' | 'PUSH';
+        reason?: 'DEDUPE_HIT' | 'DAILY_CAP' | 'PREFERENCE_DISABLED' | 'NOT_ELIGIBLE' | 'CHANNEL_ERROR' | 'ENUM_FALLBACK' | 'VALIDATION_ERROR' | 'SENT_OK';
+        correlationId?: string;
+        sinceHours?: number;
+        limit?: number;
+    }) => {
+        const query = new URLSearchParams();
+        if (filters?.status) query.append('status', filters.status);
+        if (filters?.kind) query.append('kind', filters.kind);
+        if (filters?.channel) query.append('channel', filters.channel);
+        if (filters?.reason) query.append('reason', filters.reason);
+        if (filters?.correlationId) query.append('correlationId', filters.correlationId);
+        if (typeof filters?.sinceHours === 'number') query.append('sinceHours', String(filters.sinceHours));
+        if (typeof filters?.limit === 'number') query.append('limit', String(filters.limit));
+        const queryString = query.toString();
+        return apiClient(`/api/admin/system/alerts/dispatch-logs${queryString ? `?${queryString}` : ''}`);
+    },
+
+    // Growth funnel metrics
+    getGrowthFunnelMetrics: (window: '24h' | '7d' | '30d' | 'all' = '30d') =>
+        apiClient(`/api/admin/system/growth-funnel?window=${window}`),
+
+    // Telegram broadcast logs
+    getTelegramBroadcasts: (
+        status?: 'SENT' | 'FAILED' | 'SKIPPED',
+        limit = 50,
+        window: '24h' | '7d' | '30d' | 'all' = 'all'
+    ) => {
+        const query = new URLSearchParams();
+        if (status) query.append('status', status);
+        query.append('limit', String(limit));
+        query.append('window', window);
+        const queryString = query.toString();
+        return apiClient(`/api/admin/system/telegram-broadcasts${queryString ? `?${queryString}` : ''}`);
+    },
+
+    // Retry a Telegram broadcast by log id
+    retryTelegramBroadcast: (id: string) =>
+        apiClient(`/api/admin/system/telegram-broadcasts/${id}/retry`, {
+            method: 'POST'
+        }),
+
+    // Social Posts (X, LinkedIn, Facebook)
+    getSocialPosts: (filters?: { platform?: string; status?: string; page?: number }) => {
+        const query = new URLSearchParams();
+        if (filters?.platform) query.append('platform', filters.platform);
+        if (filters?.status) query.append('status', filters.status);
+        if (filters?.page !== undefined) query.append('page', String(filters.page));
+        const queryString = query.toString();
+        return apiClient(`/api/admin/social-posts${queryString ? `?${queryString}` : ''}`);
+    },
+
+    retrySocialPost: (id: string) =>
+        apiClient(`/api/admin/social-posts/${id}/retry`, {
+            method: 'POST'
+        }),
+
+    // Parse job description text
+    parseJobText: (text: string) =>
+        apiClient('/api/admin/opportunities/parse', {
+            method: 'POST',
+            body: JSON.stringify({ text })
+        }),
+
+    bulkAction: (ids: string[], action: 'DELETE' | 'ARCHIVE' | 'PUBLISH' | 'EXPIRE', reason?: string) =>
+        apiClient('/api/admin/opportunities/bulk', {
+            method: 'POST',
+            body: JSON.stringify({ ids, action, reason })
+        }),
+
+    adminResourcesApi: {
+        getResources: (params?: { page?: number; limit?: number; status?: string; search?: string }) => {
+            const query = new URLSearchParams();
+            if (params?.page) query.append('page', String(params.page));
+            if (params?.limit) query.append('limit', String(params.limit));
+            if (params?.status) query.append('status', params.status);
+            if (params?.search) query.append('search', params.search);
+            const queryString = query.toString();
+            return apiClient<import('@fresherflow/types').AdminGetResourcesResponse>(`/api/admin/resources${queryString ? `?${queryString}` : ''}`);
+        },
+        createResource: (data: any) =>
+            apiClient<{ resource: import('@fresherflow/types').SharedResource }>(`/api/admin/resources`, {
+                method: 'POST',
+                body: JSON.stringify(data)
+            }),
+        updateResource: (id: string, data: any) =>
+            apiClient<{ resource: import('@fresherflow/types').SharedResource }>(`/api/admin/resources/${id}`, {
+                method: 'PATCH',
+                body: JSON.stringify(data)
+            }),
+        deleteResource: (id: string) =>
+            apiClient<void>(`/api/admin/resources/${id}`, {
+                method: 'DELETE'
+            })
+    },
+
+    regenerateStaticFeeds: (target?: string) =>
+        apiClient<{ success: boolean; message: string }>('/api/admin/system/regenerate-feeds', {
+            method: 'POST',
+            body: JSON.stringify({ target })
+        }),
+
+    revalidateWebsiteCache: () =>
+        apiClient<{ success: boolean; message: string }>('/api/admin/system/revalidate-web', {
+            method: 'POST'
+        }),
+
+    adminPushApi: {
+        sendPush: (data: { title: string; message: string; url?: string }) =>
+            apiClient<{ success: boolean; messageId: string }>('/api/admin/push', {
+                method: 'POST',
+                body: JSON.stringify(data)
+            })
+    },
+
+    // Ingestion & Discovery Engine
+    getIngestionTargets: () =>
+        apiClient<import('@fresherflow/api-client').IngestionTarget[] | { status: string; total: number; targets: import('@fresherflow/api-client').IngestionTarget[] }>('/api/admin/targets'),
+
+    runIngestionTarget: (payload: import('@fresherflow/api-client').IngestionRunTargetPayload) =>
+        apiClient<unknown>('/api/admin/targets/run', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        }),
+
+    runAllIngestion: (payload?: import('@fresherflow/api-client').IngestionRunAllPayload) =>
+        apiClient<import('@fresherflow/api-client').IngestionRunAllResponse>('/api/admin/targets/run-all', {
+            method: 'POST',
+            body: JSON.stringify(payload || { filter: true }),
+        }),
+
+    getIngestionStats: () =>
+        apiClient<import('@fresherflow/api-client').IngestionStats>('/api/admin/targets'),
+
+    // Source health dashboard — CDN/R2 only, no database. Shape owned by
+    // `app/api/admin/discovery/sources/route.ts` (SourcesPayload).
+    // Spelled out here (not imported) because `lib/` must not depend on
+    // `app/` — the route owns the shape; this names it at the transport
+    // boundary.
+    getSourceHealth: (days = 30) =>
+        apiClient<{
+            days: number;
+            generatedAt: string;
+            totals: { sites: number; channels: number; links7d: number; jobs7d: number; troubled: number };
+            ledgerAvailable: boolean;
+            census: {
+                sites: Array<{ name: string; urls: string[]; govtOnly: boolean }>;
+                channels: string[];
+            };
+            siteHealth: Array<{
+                id: string;
+                kind: 'site' | 'channel';
+                name: string;
+                configured: boolean;
+                govtOnly: boolean;
+                fetch: string | null;
+                lastRun: string | null;
+                links7d: number | null;
+                jobs7d: number;
+                jobsPrior7d: number;
+                totalLinks: number;
+                totalJobs: number;
+                daily: Array<{ d: string; jobs: number }>;
+            }>;
+        }>(`/api/admin/discovery/sources?days=${days}`),
+
+};
+

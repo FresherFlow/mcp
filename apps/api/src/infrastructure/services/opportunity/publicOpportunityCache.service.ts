@@ -1,0 +1,80 @@
+import { redis } from '@fresherflow/database';
+import { logger } from '@fresherflow/utils';
+
+async function deleteByPattern(pattern: string) {
+    let cursor = '0';
+    try {
+        do {
+            const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 200);
+            cursor = nextCursor;
+            if (keys.length > 0) {
+                await redis.del(...keys);
+            }
+        } while (cursor !== '0');
+    } catch (err: unknown) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.error('[Redis] Delete by pattern failed', { pattern, error });
+    }
+}
+
+function getCanonicalPath(slugOrId: string, type?: string): string {
+    if (type === 'GOVERNMENT') return `/govt/${slugOrId}`;
+    return `/jobs/${slugOrId}`;
+}
+
+export async function invalidatePublicOpportunityCache(options?: {
+    idsOrSlugs?: string[];
+    purgeFeed?: boolean;
+    type?: string; // 'JOB' | 'INTERNSHIP' | 'WALKIN' — narrows ISR path to revalidate
+    tags?: string[];
+}) {
+    const idsOrSlugs = Array.from(new Set((options?.idsOrSlugs || []).filter(Boolean)));
+    const tags = Array.from(new Set((options?.tags || []).filter(Boolean)));
+    const purgeFeed = options?.purgeFeed !== false;
+
+    try {
+        if (purgeFeed) {
+            await deleteByPattern('opportunities|v4|*');
+        }
+
+        const pathsToRevalidate: string[] = [];
+
+        if (idsOrSlugs.length > 0) {
+            for (const value of idsOrSlugs) {
+                await deleteByPattern(`opportunity_detail|v3|*|id:${value}`);
+            }
+
+            const slug = idsOrSlugs.find(v => !v.match(/^[0-9a-f-]{36}$/i)) ?? idsOrSlugs[0];
+            // Use type-aware path so revalidatePath targets the correct Next.js route:
+            // /jobs/[slug] for standard jobs, /govt/[slug] for government jobs.
+            pathsToRevalidate.push(getCanonicalPath(slug, options?.type));
+        }
+
+        // Convert tags to paths for background revalidation
+        const tagPaths = tags.map(tag => {
+            if (tag === 'hub-jobs') return '/jobs';
+            if (tag === 'hub-internships') return '/jobs/internships';
+            if (tag === 'hub-walkins') return '/jobs/walkins';
+            if (tag === 'hub-government') return '/govt';
+            if (tag.startsWith('company-')) return `/companies/${tag.replace('company-', '')}`;
+            if (tag.startsWith('location-')) return `/locations/${tag.replace('location-', '')}`;
+            if (tag.startsWith('skill-')) return `/skills/${tag.replace('skill-', '')}`;
+            if (tag.startsWith('batch-')) return `/batch/${tag.replace('batch-', '')}`;
+            if (tag.startsWith('role-')) return `/roles/${tag.replace('role-', '')}`;
+            return null;
+        }).filter(Boolean) as string[];
+
+        pathsToRevalidate.push(...tagPaths);
+
+        // Queue paths in Redis to be processed during "Generate JSON"
+        // This ensures the CDN is actually updated before we tell Next.js to fetch from it
+        if (pathsToRevalidate.length > 0) {
+            await redis.sadd('pending_cache_paths', ...Array.from(new Set(pathsToRevalidate)));
+        }
+
+        logger.debug('Queued public opportunity cache invalidations', { paths: pathsToRevalidate, purgeFeed });
+    } catch (error: unknown) {
+        logger.error('[Redis] Failed to queue public opportunity cache invalidations', { error: error instanceof Error ? error.message : String(error) });
+    }
+}
+

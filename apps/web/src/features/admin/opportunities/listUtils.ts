@@ -1,0 +1,94 @@
+import { getApiBaseForEndpoint } from '@/lib/api/client';
+import { SITE_URL } from '@/lib/utils/runtimeConfig';
+import { enumToTypeParam } from '@/lib/opportunity/typeParam';
+import type { Opportunity } from '@fresherflow/types';
+import { buildSocialCaption as sharedBuildSocialCaption } from '@fresherflow/utils/social';
+
+export const buildExportUrl = (typeFilter: string, statusFilter: string) => {
+    const params = new URLSearchParams();
+    if (typeFilter) params.set('type', enumToTypeParam(typeFilter));
+    if (statusFilter) params.set('status', statusFilter);
+    const query = params.toString();
+    const adminBase = getApiBaseForEndpoint('/api/admin/opportunities/export');
+    return `${adminBase}/api/admin/opportunities/export${query ? `?${query}` : ''}`;
+};
+
+export const formatLinkHealth = (health?: string) => {
+    if (!health) return 'Unknown';
+    return health.toUpperCase();
+};
+
+export const linkHealthClass = (health?: string) => {
+    if (health === 'HEALTHY') return 'bg-success/10 text-success dark:text-success ring-success/20';
+    if (health === 'RETRYING') return 'bg-warning/10 text-warning dark:text-warning ring-warning/20';
+    if (health === 'BROKEN') return 'bg-destructive/10 text-destructive ring-destructive/20';
+    return 'bg-muted text-muted-foreground ring-border/40';
+};
+
+export const formatLastVerified = (value?: string | Date | null) => {
+    if (!value) return 'Never';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Never';
+    return date.toLocaleString();
+};
+
+export const isOpportunityExpired = (opp: { expiresAt?: string | Date | null; expiredAt?: string | Date | null }) => {
+    if (opp.expiredAt) return true;
+    if (!opp.expiresAt) return false;
+    return new Date(opp.expiresAt).getTime() <= Date.now();
+};
+
+/**
+ * Row shape used by the admin opportunity grids: an `Opportunity` plus the two
+ * soft-delete / expiry markers the admin API returns on list endpoints and that
+ * `getStatusLabel` reads. Declared once so every list and column shares it.
+ */
+export type AdminOpportunityRow = Opportunity & {
+    expiredAt?: string | Date | null;
+    deletedAt?: string | Date | null;
+};
+
+export const getStatusLabel = (opp: Opportunity & { expiredAt?: string | Date | null; deletedAt?: string | Date | null }) => {
+    if (opp.deletedAt) return 'DELETED';
+    if (opp.status === 'ARCHIVED') return 'ARCHIVED';
+    if (isOpportunityExpired(opp)) return 'EXPIRED';
+    if (opp.status === 'PUBLISHED') return 'LIVE';
+    return opp.status;
+};
+
+export const getStatusBadgeClass = (opp: Opportunity & { expiredAt?: string | Date | null; deletedAt?: string | Date | null }) => {
+    const label = getStatusLabel(opp);
+    if (label === 'DELETED') return 'bg-transparent text-muted-foreground ring-border/40';
+    if (label === 'EXPIRED') return 'bg-transparent text-warning dark:text-warning ring-warning/20';
+    if (label === 'ARCHIVED') return 'bg-transparent text-destructive ring-destructive/20';
+    if (label === 'LIVE') return 'bg-transparent text-success dark:text-success ring-success/20';
+    return 'bg-transparent text-muted-foreground ring-border/40';
+};
+
+import { getOpportunityPath } from '@/features/jobs/domain/opportunityPath';
+import { isGovernmentOpportunity, type OpportunityDimensions } from './formUtils';
+
+export type PublicOpportunityRef = Pick<Opportunity, 'id' | 'slug'> & Partial<OpportunityDimensions>;
+
+export const getPublicOpportunityHref = (opp: PublicOpportunityRef) => {
+    return getOpportunityPath(isGovernmentOpportunity(opp) ? 'GOVERNMENT' : undefined, opp.slug || opp.id);
+};
+
+export const getPublicOpportunityUrl = (opp: PublicOpportunityRef) => {
+    // NEXT_PUBLIC_* vars are available in the client bundle; SITE_URL is server-only so may be empty
+    const envOrigin = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || SITE_URL;
+    // Fallback: infer from admin window origin (e.g. https://admin.fresherflow.in -> https://fresherflow.in)
+    const browserOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const inferredOrigin = browserOrigin.replace('://admin.', '://');
+    const origin = (envOrigin || inferredOrigin || '').replace(/\/$/, '');
+    return `${origin}${getPublicOpportunityHref(opp)}`;
+};
+
+export type SocialOpportunity = Pick<Opportunity, 'id' | 'slug' | 'title' | 'company' | 'locations' | 'allowedPassoutYears' | 'allowedCourses' | 'allowedDegrees' | 'category' | 'sector' | 'recruitmentMethod' | 'employmentTypes' | 'governmentJobDetails'>;
+
+export const buildSocialCaption = (opp: SocialOpportunity) => {
+    return sharedBuildSocialCaption(
+        { title: opp.title, company: opp.company, locations: opp.locations, applyLink: getPublicOpportunityUrl(opp) },
+        'linkedin',
+    );
+};

@@ -1,0 +1,728 @@
+import { markDetailSyncedNow, markFeedSyncedNow } from '@/lib/cache/syncStatus';
+import { toCleanMessage } from '@/lib/utils/error';
+import { normalizeApiBase } from '@/lib/api/normalize-api-base';
+
+// Thrown when a request is made with no network connectivity.
+// Callers can check `err instanceof OfflineError` to skip toast notifications.
+export class OfflineError extends Error {
+    statusCode = 0; // Ensure it has a status code to help filtering
+    constructor() {
+        super('You are offline. Please check your connection.');
+        this.name = 'OfflineError';
+    }
+}
+
+// Thrown when the session is definitely invalid (401 after refresh failed)
+export class UnauthorizedError extends Error {
+    statusCode = 401;
+    constructor(message = 'Session expired') {
+        super(message);
+        this.name = 'UnauthorizedError';
+    }
+}
+
+const USER_ACCESS_TOKEN_KEY = 'ff_user_access_token_v1';
+const USER_REFRESH_TOKEN_KEY = 'ff_user_refresh_token_v1';
+const ADMIN_ACCESS_TOKEN_KEY = 'ff_admin_access_token_v1';
+// Key the shared packages/api-client reads for its Bearer header.
+const PACKAGE_AUTH_TOKEN_KEY = 'ff_auth_token_v1';
+
+/**
+ * Wire the shared packages/api-client to localStorage-backed storage once.
+ * Without this its global client is constructed storageless and the token
+ * interceptor never fires — every authenticated package call (room join,
+ * votes, comments) goes out tokenless and 401s for signed-in web users.
+ * The mirror key is written by setUserTokens (plus one-time self-heal).
+ */
+if (typeof window !== 'undefined') {
+    void import('@fresherflow/api-client').then(({ configureClient }) => {
+        try {
+            configureClient(undefined, {
+                getItem: async (key: string) => {
+                    try {
+                        return window.localStorage.getItem(key);
+                    } catch {
+                        return null;
+                    }
+                },
+                setItem: async (key: string, value: string) => {
+                    try {
+                        window.localStorage.setItem(key, value);
+                    } catch {
+                        // Ignore storage errors
+                    }
+                },
+            });
+        } catch {
+            // Package client stays on its defaults; web wrapper calls unaffected.
+        }
+    });
+}
+
+/**
+ * Repeat suppressor for client warnings. One page load fires the same request
+ * twice under React strict mode, which produced two identical console lines for
+ * a single failure.
+ */
+const clientWarnSeen = new Map<string, number>();
+const CLIENT_WARN_WINDOW_MS = 4000;
+
+function shouldLogClientWarningOnce(key: string): boolean {
+    const now = Date.now();
+    const last = clientWarnSeen.get(key);
+    if (last !== undefined && now - last < CLIENT_WARN_WINDOW_MS) return false;
+    clientWarnSeen.set(key, now);
+    if (clientWarnSeen.size > 100) {
+        for (const [k, v] of clientWarnSeen) {
+            if (now - v >= CLIENT_WARN_WINDOW_MS) clientWarnSeen.delete(k);
+        }
+    }
+    return true;
+}
+
+function logClientWarning(message: string, error?: unknown) {
+    if (process.env.NODE_ENV === 'development') {
+        const err = error as { statusCode?: number; message?: string } | undefined;
+        // Expected OTP / auth flows — handled by toast only, keep logs clean like reference apps (dub: silent)
+        if (err?.statusCode === 429) return;
+        if (err?.statusCode === 401) return; // all 401 OTP failures are expected (invalid code, Too many, expired)
+        if (err?.message?.includes('Too many')) return;
+        if (err?.message?.includes('Invalid verification code')) return;
+        if (err?.message?.includes('No OTP found') || err?.message?.includes('OTP expired')) return;
+        if (error instanceof Error && error.message.includes('status 500')) {
+            return;
+        }
+        const status = err?.statusCode;
+        if (!shouldLogClientWarningOnce(`${message}|${status ?? ''}`)) return;
+        // Only append the server's message when there is one. The old fallback
+        // appended the literal "Request handled" to every warning that carried
+        // no error, which read as a second, meaningless message.
+        const detail = err?.message ? ` — ${toCleanMessage(err.message)}` : '';
+        console.warn(`[Client] ${message}${detail}`);
+    }
+}
+
+function stripStackFromData<T>(data: T): T {
+    if (!data || typeof data !== 'object') return data;
+    try {
+        const copy = { ...(data as Record<string, unknown>) };
+        const errPart = copy.error;
+        if (errPart && typeof errPart === 'object') {
+            const errCopy = { ...(errPart as Record<string, unknown>) };
+            delete errCopy.stack;
+            delete errCopy.statusCode;
+            copy.error = errCopy;
+        }
+        if ('stack' in copy) delete (copy as Record<string, unknown>).stack;
+        return copy as T;
+    } catch {
+        return data;
+    }
+}
+
+function shouldLogClientError(error: unknown): boolean {
+    const err = error as { statusCode?: number; code?: string; message?: string };
+    if (error instanceof OfflineError || error instanceof UnauthorizedError) return false;
+    if (err.code === 'TIMEOUT' || err.code === 'ECONNREFUSED') return false;
+    if (err.statusCode === 401 || err.statusCode === 403 || err.statusCode === 429) return false;
+    // 503 is our own "database unavailable / schema pending" envelope, not a
+    // client bug. console.error here makes the dev overlay print a stack and a
+    // source frame for what is a background poll failing.
+    if (err.statusCode === 502 || err.statusCode === 503 || err.statusCode === 504) return false;
+    if (typeof err.message === 'string') {
+        if (err.message === 'Refresh failed') return false;
+        if (err.message.includes('Server is temporarily unavailable')) return false;
+        if (err.message.includes('Gateway Timeout')) return false;
+        if (err.message.includes('ECONNREFUSED') || err.message.includes('Request failed with status 500')) return false;
+    }
+    return true;
+}
+
+function clearClientSessionHints() {
+    if (typeof document === 'undefined') return;
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : undefined;
+    const cookiesToClear = ['ff_logged_in', 'accessToken', 'refreshToken'];
+    cookiesToClear.forEach((name) => {
+        document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;`;
+        if (hostname) {
+            document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT; domain=${hostname};`;
+        }
+    });
+}
+
+function readStorage(key: string): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+function writeStorage(key: string, value: string) {
+    if (typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, value);
+    } catch {
+        // Ignore storage errors
+    }
+}
+
+function clearStorage(key: string) {
+    if (typeof window === 'undefined') return;
+    try {
+        window.localStorage.removeItem(key);
+    } catch {
+        // Ignore storage errors
+    }
+}
+
+export function setUserTokens(accessToken?: string | null, refreshToken?: string | null) {
+    if (accessToken) {
+        writeStorage(USER_ACCESS_TOKEN_KEY, accessToken);
+        // Mirror into the shared api-client key: the packages/api-client
+        // ApiClient attaches Bearer ONLY from `ff_auth_token_v1`, so without
+        // this every authenticated package call (room join, votes, comments)
+        // goes out tokenless and 401s for signed-in web users.
+        writeStorage(PACKAGE_AUTH_TOKEN_KEY, accessToken);
+    }
+    if (refreshToken) {
+        writeStorage(USER_REFRESH_TOKEN_KEY, refreshToken);
+    }
+}
+
+export function getUserAccessToken() {
+    const token = readStorage(USER_ACCESS_TOKEN_KEY);
+    // One-time self-heal for sessions stored before the package-key mirror
+    // existed: copy once so package-client calls authenticate too.
+    if (token && !readStorage(PACKAGE_AUTH_TOKEN_KEY)) {
+        writeStorage(PACKAGE_AUTH_TOKEN_KEY, token);
+    }
+    return token;
+}
+
+export function getUserRefreshToken() {
+    return readStorage(USER_REFRESH_TOKEN_KEY);
+}
+
+export function clearUserTokens() {
+    clearStorage(USER_ACCESS_TOKEN_KEY);
+    clearStorage(USER_REFRESH_TOKEN_KEY);
+    clearStorage(PACKAGE_AUTH_TOKEN_KEY);
+}
+
+export function setAdminAccessToken(token?: string | null) {
+    if (token) {
+        writeStorage(ADMIN_ACCESS_TOKEN_KEY, token);
+    }
+}
+
+export function getAdminAccessToken() {
+    return readStorage(ADMIN_ACCESS_TOKEN_KEY);
+}
+
+export function clearAdminAccessToken() {
+    clearStorage(ADMIN_ACCESS_TOKEN_KEY);
+}
+
+const DEFAULT_API_URL = normalizeApiBase(process.env.NEXT_PUBLIC_API_URL);
+const USER_API_URL = normalizeApiBase(process.env.NEXT_PUBLIC_USER_API_URL) || DEFAULT_API_URL;
+const USE_SEPARATE_ADMIN_API = process.env.NEXT_PUBLIC_USE_SEPARATE_ADMIN_API === 'true';
+const ADMIN_API_URL = USE_SEPARATE_ADMIN_API
+    ? (normalizeApiBase(process.env.NEXT_PUBLIC_ADMIN_API_URL) || DEFAULT_API_URL)
+    : DEFAULT_API_URL;
+
+function shouldUseRelativeApiBase(): boolean {
+    if (typeof window === 'undefined') return false;
+    if (process.env.NODE_ENV !== 'development') return false;
+    const { hostname } = window.location;
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+}
+
+function isUserLoggingOut() {
+    return typeof window !== 'undefined' && Boolean((window as Window & { __isLoggingOut?: boolean }).__isLoggingOut);
+}
+
+function isAdminLoggingOut() {
+    return typeof window !== 'undefined' && Boolean((window as Window & { __isAdminLoggingOut?: boolean }).__isAdminLoggingOut);
+}
+
+function hasCookie(name: string): boolean {
+    if (typeof document === 'undefined') return false;
+    return document.cookie.split(';').some((part) => part.trim().startsWith(`${name}=`));
+}
+
+function isUserProtectedEndpoint(endpoint: string): boolean {
+    const publicPrefixes = [
+        '/api/public',
+        '/api/opportunities',
+        '/api/health',
+        '/api/og',
+    ];
+    if (publicPrefixes.some((prefix) => endpoint.startsWith(prefix))) return false;
+    const protectedPrefixes = [
+        '/api/auth/me',
+        '/api/auth/logout',
+        '/api/auth/refresh',
+        '/api/profile',
+        '/api/alerts',
+        '/api/actions',
+        '/api/saved',
+        '/api/dashboard',
+        '/api/referrals/me',
+        '/api/feedback',
+        // Authed discussion/community writes (job comments, votes, reports,
+        // signals, interviews, updates) and contribute reads/submits. Reads on
+        // these paths stay public via optionalAuth — the Bearer header is only
+        // attached when a token exists, so guest reads are unchanged.
+        '/api/jobs',
+        '/api/rooms',
+        '/api/community',
+        '/api/interviews',
+        '/api/updates',
+        '/api/notifications',
+        '/api/resources',
+    ];
+    return protectedPrefixes.some((prefix) => endpoint.startsWith(prefix));
+}
+
+function isAdminProtectedEndpoint(endpoint: string): boolean {
+    if (!endpoint.startsWith('/api/admin')) return false;
+    const authPublicEndpoints = [
+        '/api/admin/auth/login/options',
+        '/api/admin/auth/login/verify',
+        '/api/admin/auth/login/totp',
+        '/api/admin/auth/register/options',
+        '/api/admin/auth/register/verify',
+    ];
+    return !authPublicEndpoints.some((prefix) => endpoint.startsWith(prefix));
+}
+
+function shouldAttemptSessionRefresh(endpoint: string): boolean {
+    // Admin API uses its own token with no user-session refresh. Attempting a
+    // user refresh here only produces "No refresh token provided" spam and can
+    // log the user out because of an unrelated admin 401.
+    if (endpoint.startsWith('/api/admin')) return false;
+    const authEndpointsThatShouldNotRefresh = [
+        '/api/auth/login',
+        '/api/auth/google',
+        '/api/auth/otp/send',
+        '/api/auth/otp/verify',
+        '/api/auth/handshake',
+        '/api/auth/register',
+        '/api/auth/refresh',
+        '/api/admin/auth/login/options',
+        '/api/admin/auth/login/verify',
+        '/api/admin/auth/login/totp',
+        '/api/admin/auth/register/options',
+        '/api/admin/auth/register/verify',
+        '/api/admin/auth/refresh',
+    ];
+
+    return !authEndpointsThatShouldNotRefresh.some((prefix) => endpoint.startsWith(prefix));
+}
+
+export function getApiBaseForEndpoint(endpoint: string): string {
+    if (shouldUseRelativeApiBase()) {
+        return '';
+    }
+    if (endpoint.startsWith('/api/admin')) {
+        return ADMIN_API_URL;
+    }
+    return USER_API_URL;
+}
+
+function shouldBypassBrowserCache(endpoint: string, method: string): boolean {
+    if (method !== 'GET' && method !== 'HEAD') return true;
+    const privatePrefixes = [
+        '/api/auth',
+        '/api/admin',
+        '/api/alerts',
+        '/api/profile',
+        '/api/account',
+        '/api/saved',
+        '/api/actions',
+        '/api/tracker',
+        '/api/feedback',
+    ];
+    return privatePrefixes.some((prefix) => endpoint.startsWith(prefix));
+}
+
+function isPublicSharedReadEndpoint(endpoint: string): boolean {
+    return endpoint.startsWith('/api/opportunities')
+        || endpoint.startsWith('/api/public/companies')
+        || endpoint.startsWith('/api/public/sitemap')
+        || endpoint === '/api/health'
+        || endpoint === '/api/stats';
+}
+
+function shouldIncludeCredentials(endpoint: string, method: string): boolean {
+    if (method !== 'GET' && method !== 'HEAD') return true;
+    if (!isPublicSharedReadEndpoint(endpoint)) return true;
+
+    return hasCookie('ff_logged_in')
+        || hasCookie('accessToken')
+        || hasCookie('refreshToken')
+        || Boolean(getUserAccessToken())
+        || Boolean(getUserRefreshToken());
+}
+
+// Singleton promise to handle concurrent refresh requests
+let isRefreshing: Promise<void> | null = null;
+
+
+// API Client with automatic cookie handling
+export async function apiClient<T = unknown>(
+    endpoint: string,
+    options: RequestInit = {}
+): Promise<T> {
+    if (isUserProtectedEndpoint(endpoint) && isUserLoggingOut()) {
+        throw new UnauthorizedError();
+    }
+    if (isAdminProtectedEndpoint(endpoint) && isAdminLoggingOut()) {
+        throw new UnauthorizedError('Admin session expired');
+    }
+
+    const method = (options.method || 'GET').toUpperCase();
+    const rawHeaders = { ...(options.headers as Record<string, string> || {}) };
+    const headers: Record<string, string> = { ...rawHeaders };
+    const hasJsonBody = options.body != null && (typeof FormData === 'undefined' || !(options.body instanceof FormData));
+    const isSimpleRead = method === 'GET' || method === 'HEAD';
+
+    if (hasJsonBody && !('Content-Type' in headers)) {
+        headers['Content-Type'] = 'application/json';
+    }
+    if (!isSimpleRead) {
+        headers['X-Requested-From'] = headers['X-Requested-From'] || 'fresherflow-web';
+        headers['X-Request-Id'] = headers['X-Request-Id'] || `web-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    if (isUserProtectedEndpoint(endpoint)) {
+        let userAccessToken = getUserAccessToken();
+        if (!userAccessToken && typeof window !== 'undefined') {
+            try {
+                const { auth } = await import('@/lib/api/firebase');
+                if (auth.currentUser) {
+                    userAccessToken = await auth.currentUser.getIdToken();
+                }
+            } catch {}
+        }
+        if (userAccessToken && !headers.Authorization) {
+            headers.Authorization = `Bearer ${userAccessToken}`;
+        }
+    }
+
+    if (isAdminProtectedEndpoint(endpoint)) {
+        const adminAccessToken = getAdminAccessToken();
+        if (adminAccessToken && !headers.Authorization) {
+            headers.Authorization = `Bearer ${adminAccessToken}`;
+        }
+    }
+
+    const bypassCache = shouldBypassBrowserCache(endpoint, method);
+    const includeCredentials = shouldIncludeCredentials(endpoint, method);
+
+    const fetchOptions: RequestInit = {
+        ...options,
+        headers,
+        credentials: includeCredentials ? 'include' : 'omit',
+        // Public reads can use browser cache; private/auth data stays uncached.
+        cache: options.cache ?? (bypassCache ? 'no-store' : 'default'),
+    };
+    const baseUrl = getApiBaseForEndpoint(endpoint);
+    const requestUrl = `${baseUrl}${endpoint}`;
+    const requestMethod = (fetchOptions.method || 'GET').toUpperCase();
+    const canRetry = requestMethod === 'GET';
+
+    const fetchWithRetry = async () => {
+        let lastError: unknown;
+        const maxRetries = 3;
+        const baseDelay = 300;
+        const DEFAULT_TIMEOUT = 10000; // 10 seconds
+
+        for (let i = 0; i < maxRetries; i++) {
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
+
+            try {
+                const response = await fetch(requestUrl, {
+                    ...fetchOptions,
+                    signal: controller.signal
+                });
+                clearTimeout(id);
+
+                if (response.ok || !canRetry) return response;
+
+                // Only retry on transient 5xx — never retry 429 (rate limit) like reference dub (returns 429 immediately)
+                if (response.status < 500) return response;
+                // 503 is our DB_UNAVAILABLE / schema-pending envelope: the server
+                // is reachable but cannot serve. Retrying it three times with
+                // backoff just multiplied one failure into three server-side
+                // errors. 502/504 stay retryable — those are genuinely transient.
+                if (response.status === 503 || response.status === 501) return response;
+
+                const err = new Error(`Request failed with status ${response.status}`) as Error & { statusCode?: number };
+                err.statusCode = response.status;
+                lastError = err;
+                try {
+                    if (response.body) {
+                        void response.body.cancel().catch(() => {});
+                    } else {
+                        void response.arrayBuffer().catch(() => {});
+                    }
+                } catch {
+                    // ignore stream cancel error
+                }
+            } catch (error: unknown) {
+                clearTimeout(id);
+                if (error instanceof Error && error.name === 'AbortError') {
+                    lastError = new Error('Gateway Timeout: The server took too long to respond.');
+                    (lastError as { code?: string }).code = 'TIMEOUT';
+                } else {
+                    lastError = error;
+                }
+                if (!canRetry) throw lastError;
+            }
+
+            // Exponential backoff: 300, 900, 2700ms
+            const delay = baseDelay * Math.pow(3, i);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        throw lastError;
+    };
+
+    try {
+        let response = await fetchWithRetry();
+
+        // If 401, handle token refresh with a singleton lock (mutex)
+        const isLoggingOut = typeof window !== 'undefined' && (window as unknown as { __isLoggingOut?: boolean }).__isLoggingOut;
+
+        if (response.status === 401 && !isLoggingOut && shouldAttemptSessionRefresh(endpoint)) {
+
+            if (!isRefreshing) {
+                isRefreshing = (async () => {
+                    try {
+                        const refreshResponse = await fetch(`${USER_API_URL}/api/auth/refresh`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-Requested-From': 'fresherflow-web',
+                                'X-Request-Id': `web-refresh-${Math.random().toString(36).slice(2, 10)}`,
+                                ...(getUserRefreshToken() ? { 'X-Refresh-Token': getUserRefreshToken() as string } : {}),
+                            },
+                            credentials: 'include'
+                        });
+
+                        if (!refreshResponse.ok) {
+                            // Only wipe the session on definitive auth rejection.
+                            // Transient 5xx/network failures must not destroy a live refresh token.
+                            const status = refreshResponse.status || 401;
+                            if (status === 401 || status === 403) {
+                                clearClientSessionHints();
+                                clearUserTokens();
+                            }
+                            const err = new UnauthorizedError('Refresh failed');
+                            (err as Error & { status?: number }).status = status;
+                            throw err;
+                        }
+                        try {
+                            const refreshPayload = await refreshResponse.json() as {
+                                accessToken?: string;
+                                refreshToken?: string;
+                            };
+                            if (refreshPayload.accessToken) {
+                                // Persist the rotated refresh token too — the cookie can be
+                                // cleared by a racing 401; the header fallback must match it.
+                                setUserTokens(refreshPayload.accessToken, refreshPayload.refreshToken ?? null);
+                            }
+                        } catch {
+                            // Ignore malformed refresh body
+                        }
+                        // Refresh successful
+                    } catch (error) {
+                        logClientWarning('[Auth] Refresh failed:', error);
+                        // Let the error propagate to the waiting requests so they can throw proper 401
+                        throw error;
+                    } finally {
+                        isRefreshing = null; // Release lock
+                    }
+                })();
+            } else {
+                // Refresh in progress, waiting
+            }
+
+            // Wait for the single refresh to complete (success or fail)
+            try {
+                await isRefreshing;
+                
+                // Retry original request with the newly refreshed token
+                if (isUserProtectedEndpoint(endpoint)) {
+                    const newToken = getUserAccessToken();
+                    if (newToken) {
+                        (fetchOptions.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
+                    }
+                }
+
+                response = await fetchWithRetry();
+            } catch (err: unknown) {
+                const error = err as { status?: number };
+                // Only force logout when refresh proves the session is actually invalid.
+                // Transient refresh failures (timeouts, 5xx, deploy/network blips) should not
+                // wipe the user's session and send them back to login.
+                const isExplicitAuthFailure = error?.status === 401 || error?.status === 403 || err instanceof UnauthorizedError;
+                const isNetworkError = error instanceof OfflineError || (error instanceof TypeError && error.message.includes('fetch'));
+
+                if (isExplicitAuthFailure && !isNetworkError) {
+                    clearClientSessionHints();
+                    clearUserTokens();
+                    if (typeof window !== 'undefined') {
+                        window.dispatchEvent(new CustomEvent('fresherflow-unauthorized'));
+                    }
+                    throw new UnauthorizedError('Refresh failed');
+                }
+
+                // Otherwise, let the original request fail normally without clearing the session.
+                throw error;
+            }
+        }
+
+        if (!response.ok) {
+            let errorMessage = 'Request failed';
+            let errorData: { error?: { message?: string; code?: string; requestId?: string } | string; completionPercentage?: number; requiredCompletion?: number } = {};
+
+            try {
+                errorData = await response.json();
+                const errorObj = errorData.error;
+                const rawMessage = typeof errorObj === 'object' && errorObj !== null ? errorObj.message || errorMessage : (typeof errorObj === 'string' ? errorObj : errorMessage);
+                errorMessage = toCleanMessage(rawMessage);
+            } catch {
+                // Fallback if response is not JSON
+                if (response.status === 429) {
+                    errorMessage = 'Too many requests. Please wait a moment and try again.';
+                } else if (response.status >= 500) {
+                    errorMessage = 'Server is temporarily unavailable. Please try again.';
+                } else {
+                    errorMessage = `Request failed (${response.status})`;
+                }
+            }
+
+            // Special handling for 403 profile incomplete errors
+            if (response.status === 403 && errorData.completionPercentage !== undefined) {
+                const error = new Error(errorMessage) as Error & { code: string; completionPercentage: number; requiredCompletion: number };
+                error.code = 'PROFILE_INCOMPLETE';
+                (error as Error & { statusCode?: number }).statusCode = response.status;
+                error.completionPercentage = errorData.completionPercentage;
+                error.requiredCompletion = errorData.requiredCompletion || 100;
+                throw error;
+            }
+
+            if (response.status === 401) {
+                if (isAdminProtectedEndpoint(endpoint)) {
+                    clearAdminAccessToken();
+                    if (typeof document !== 'undefined') {
+                        document.cookie = 'ff_admin_logged_in=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+                    }
+                } else if (isUserProtectedEndpoint(endpoint)) {
+                    clearClientSessionHints();
+                    clearUserTokens();
+                } else {
+                    // Fallback: clear both if we can't determine the endpoint type
+                    clearClientSessionHints();
+                    clearUserTokens();
+                    clearAdminAccessToken();
+                    if (typeof document !== 'undefined') {
+                        document.cookie = 'ff_admin_logged_in=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+                    }
+                }
+                throw new UnauthorizedError(errorMessage);
+            }
+
+            if (shouldLogClientError({ statusCode: response.status, message: errorMessage })) {
+                // console.warn, not console.error: the Next dev overlay appends a
+                // stack and source frame to every console.error, turning a
+                // one-line message into a nine-line block.
+                console.warn(`[Client] API request failed: ${method} ${endpoint} (${response.status}) - ${toCleanMessage(errorMessage)}`);
+            }
+
+            const httpError = new Error(toCleanMessage(errorMessage)) as Error & {
+                statusCode?: number;
+                data?: typeof errorData;
+            };
+            httpError.statusCode = response.status;
+            httpError.data = stripStackFromData(errorData);
+            throw httpError;
+        }
+
+        if (method === 'GET') {
+            if (endpoint.startsWith('/api/opportunities') || endpoint.startsWith('/api/dashboard')) {
+                markFeedSyncedNow();
+            }
+            if (/^\/api\/opportunities\/[^/?]+/.test(endpoint)) {
+                markDetailSyncedNow();
+            }
+        }
+
+        if (response.status === 204) {
+            return {} as T;
+        }
+
+        const text = await response.text();
+        if (!text || text.trim() === '') {
+            return {} as T;
+        }
+
+        return JSON.parse(text);
+    } catch (error: unknown) {
+        // Convert network-level failures that occur while offline into OfflineError.
+        const isNetworkError = error instanceof TypeError && (
+            (error.message.includes('fetch') || error.message.includes('network') || error.message.includes('Failed to fetch'))
+        );
+        const offlineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+        if ((isNetworkError || offlineNow) && !(error instanceof OfflineError)) {
+            throw new OfflineError();
+        }
+
+        if (shouldLogClientError(error)) {
+            const errForLog = error as { statusCode?: number; code?: string; message?: string };
+            console.warn(`[Client] API request failed: ${method} ${endpoint} (${errForLog.statusCode ?? 'network'}) - ${toCleanMessage(errForLog.message || 'Request failed')}`);
+        } else {
+            // One line, no error object: passing the error to the console makes
+            // the dev overlay append a stack and source frame.
+        const err = error as { statusCode?: number; code?: string; message?: string };
+        // Our own 5xx envelope is always surfaced by the caller as a toast, and
+        // toastError prints the single console line. Logging here too printed
+        // every server error twice.
+        const isServerEnvelope = Boolean(err.statusCode && err.statusCode >= 500);
+        if (!isServerEnvelope) {
+            if (err.statusCode || err.code) {
+                // Pass the error so the line carries the server's own reason.
+                logClientWarning(`API unavailable: ${method} ${endpoint}`, error);
+            } else {
+                logClientWarning('API request handled:', error);
+            }
+        }
+        }
+
+        const err = error as { statusCode?: number; code?: string; message?: string };
+        const isOffline = error instanceof OfflineError;
+        const isUnauthorized = error instanceof UnauthorizedError || err.statusCode === 401 || err.message?.includes('No token provided');
+        const isSafariLoadFailed = error instanceof TypeError && err.message === 'Load failed';
+        const isCommonNetworkError = error instanceof TypeError && (
+            err.message?.includes('Failed to fetch') ||
+            err.message?.includes('NetworkError') ||
+            err.message?.includes('network error')
+        );
+
+        const shouldReport = !isOffline && !isUnauthorized && !isSafariLoadFailed && !isCommonNetworkError &&
+            (err.statusCode != null && err.statusCode >= 500 || err.code === 'TIMEOUT' || (err.statusCode == null && !isOffline));
+
+        if (shouldReport) {
+            import('@sentry/nextjs').then(Sentry => {
+                Sentry.captureException(error, {
+                    extra: { endpoint, method, statusCode: err.statusCode, code: err.code }
+                });
+            });
+        }
+        throw error;
+    }
+}

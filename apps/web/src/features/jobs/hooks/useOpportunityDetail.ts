@@ -1,0 +1,449 @@
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { ActionType, type Opportunity, type User } from '@fresherflow/types';
+import toast from 'react-hot-toast';
+import { toastError } from '@fresherflow/ui/utils/error-web';
+import { getRecentViewedByIdOrSlug, saveRecentViewed } from '@/lib/cache/recentViewed';
+import { analytics } from '@/lib/api/analytics';
+import { parseOpportunityLocation } from '@/features/jobs/domain/opportunityDisplay';
+import { getOpportunityPathFromItem } from '@/features/jobs/domain/opportunityPath';
+import { getCleanShareUrl } from '@/lib/utils/share';
+import { setPendingAction, type PendingActionInput } from '@/lib/storage/pendingAction';
+import { getRelatedOpportunities } from '@/features/jobs/utils/detailUtils';
+import { useFirebaseTracker } from '@/features/dashboard/hooks/useFirebaseTracker';
+import { useFirebaseSaved } from '@/features/dashboard/hooks/useSavedJobs';
+import { readFeedCache, saveOpportunityToCache } from '@/lib/cache/opportunitiesFeedCache';
+import { fetchOpportunityDetail } from '@/lib/api/cdnFeed';
+import { promptLoginToast } from '@/lib/utils/toastUtils';
+import { toSafeOutboundUrl } from '@/lib/utils/safeOutboundUrl';
+
+export function useOpportunityDetail(
+    id: string, 
+    initialData?: Opportunity | null, 
+    user?: User | null,
+    initialRelatedData: Opportunity[] = [],
+    allOpps: Opportunity[] = [],
+    onAuthRequired?: (action: PendingActionInput) => void
+) {
+    const router = useRouter();
+    const searchParams = useSearchParams();
+    
+    const [opp, setOpp] = useState<Opportunity | null>(initialData || null);
+    
+    const [isLoading, setIsLoading] = useState<boolean>(!initialData);
+
+    const [isUpdatingAction, setIsUpdatingAction] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    
+    const initialDataRef = useRef(initialData);
+    useEffect(() => {
+        initialDataRef.current = initialData;
+    }, [initialData]);
+
+    const hasTrackedDetailViewRef = useRef(false);
+    const hasShownNotFoundRef = useRef(false);
+    const hasAttemptedLoadRef = useRef(false);
+    /**
+     * Monotonic id for detail loads, same pattern as `useOpportunitiesFeed`'s
+     * `liveRequestIdRef`. Minted before every load; a load whose id is no
+     * longer current has been superseded (the `id` prop changed, or the effect
+     * ran again) and must not commit state. Without it a slow earlier response
+     * can land after a fast later one and render the wrong opportunity.
+     */
+    const loadRequestIdRef = useRef(0);
+    /**
+     * Which `initialData` has already been pushed into `opp`. Replaces reading
+     * `opp?.id` inside the load effect, which made the effect depend on state
+     * it also wrote, so it re-ran after every `setOpp`.
+     */
+    const appliedInitialDataIdRef = useRef<string | null>(null);
+
+    const { trackerMap, writeTrackerItem, removeTrackerItem } = useFirebaseTracker(user?.id);
+    const { savedJobsMap, toggleSavedJob } = useFirebaseSaved(user?.id);
+
+    const enrichedOpp = useMemo(() => {
+        if (!opp) return null;
+        const trackerItem = trackerMap[opp.id];
+        const isSaved = !!savedJobsMap[opp.id];
+        const oppWithActions = { ...opp, isSaved };
+
+        if (trackerItem) {
+            oppWithActions.actions = [
+                {
+                    id: `rtdb-${opp.id}`,
+                    userId: user?.id || '',
+                    opportunityId: opp.id,
+                    actionType: trackerItem.status,
+                    createdAt: new Date(trackerItem.updatedAt),
+                }
+            ];
+        }
+        return oppWithActions;
+    }, [opp, trackerMap, savedJobsMap, user?.id]);
+
+    /**
+     * `requestId` defaults to the current id so a standalone call (the Retry
+     * button calls `loadOpportunity()` with no argument) adopts the live
+     * generation and is therefore never treated as superseded.
+     */
+    const loadOpportunity = useCallback(async (requestId: number = loadRequestIdRef.current) => {
+        if (initialDataRef.current) return;
+
+        // True once a newer load has started; every commit below is gated on it.
+        const superseded = () => loadRequestIdRef.current !== requestId;
+
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            // CDN-first single-source-of-truth detail resolver.
+            // Shard first (~2.5KB)  -- €” bootstrap (~2MB) is only a fallback now.
+            const { fetchBootstrapFeed, fetchExpiredFeed } = await import('@/lib/api/cdnFeed');
+            let opportunity = await fetchOpportunityDetail(id);
+            if (superseded()) return;
+
+            if (!opportunity) {
+                const feed = await fetchBootstrapFeed();
+                opportunity = feed?.opportunities?.find(
+                    (opp) => opp.slug === id || opp.id === id
+                ) ?? null;
+            }
+
+            // Fallback: Check expired feed if not in active feed
+            if (!opportunity) {
+                const expiredFeed = await fetchExpiredFeed();
+                opportunity = expiredFeed?.opportunities?.find(
+                    (opp) => opp.slug === id || opp.id === id
+                ) ?? null;
+            }
+
+            if (superseded()) return;
+
+            if (!opportunity) {
+                // CDN shard missing (feed publishes lag behind index)  -- €” fall back
+                // to the same-origin bootstrap-feed proxy, which serves the full
+                // record including description. Raw fetch: the proxy shape differs
+                // from apiClient's unwrapping and 404 here is a clean miss.
+                try {
+                    const res = await fetch(`/api/public/job?id=${encodeURIComponent(id)}`);
+                    if (superseded()) return;
+                    if (res.ok) {
+                        const detail = await res.json() as { opportunity?: Opportunity };
+                        if (detail?.opportunity?.id) {
+                            setOpp({ ...detail.opportunity, isSaved: false } as Opportunity);
+                            return;
+                        }
+                    }
+                } catch {
+                    // fall through to offline cache / 404 below
+                }
+            }
+
+            if (!opportunity) {
+                // Fallback to recent viewed in case of offline / local cache
+                const cachedOpportunity = getRecentViewedByIdOrSlug(id);
+                if (cachedOpportunity) {
+                    setOpp(cachedOpportunity);
+                    toast.success('Offline mode: loaded cached listing.');
+                    return;
+                }
+                throw new Error('Listing not found.');
+            }
+
+            if (superseded()) return;
+
+            const sanitized = {
+                ...opportunity,
+                locations: opportunity.locations || [],
+                requiredSkills: opportunity.requiredSkills || [],
+                allowedDegrees: opportunity.allowedDegrees || [],
+                allowedPassoutYears: opportunity.allowedPassoutYears || []
+            };
+            setOpp({
+                ...sanitized,
+                isSaved: opportunity.isSaved || false
+            });
+            saveOpportunityToCache(sanitized as Opportunity);
+            saveRecentViewed({
+                ...sanitized,
+                isSaved: opportunity.isSaved || false
+            });
+        } catch (err: unknown) {
+            // A superseded load must not surface its failure either: the error
+            // belongs to an opportunity the user already navigated away from.
+            if (superseded()) return;
+            const errorMessage = (err as Error)?.message || 'Listing not found.';
+            setError(errorMessage);
+
+            // Don't show toast error for clean 404s (listing not found / no longer available)
+            const isClean404 = errorMessage === 'Listing not found.' || errorMessage === 'Opportunity no longer available.';
+            if (!hasShownNotFoundRef.current && !isClean404) {
+                hasShownNotFoundRef.current = true;
+                toastError(err, 'Listing not found.');
+            }
+        } finally {
+            // Only the current load owns the spinner. A late-finishing
+            // superseded load must not clear it while the newer one is running.
+            if (!superseded()) setIsLoading(false);
+        }
+    }, [id]);
+
+    const initialDataId = initialData?.id;
+    // Index-sourced items carry card fields but no description. Upgrade silently
+    // from the jobs/{id}.json shard (~2.5KB) without blocking the pane render.
+    // If the shard is missing (404), fall back to the live API detail endpoint.
+    const initialHasDescription = Boolean(initialData?.description);
+    useEffect(() => {
+        if (!initialData || initialHasDescription) return;
+        let cancelled = false;
+        void fetchOpportunityDetail(initialData.id).then(async (full) => {
+            if (cancelled) return;
+            if (full?.description) {
+                setOpp((prev) =>
+                    prev && prev.id === full.id
+                        ? { ...prev, ...full, isSaved: prev.isSaved || false }
+                        : prev
+                );
+                return;
+            }
+            // Shard unavailable  -- €” pull the full record from the same-origin
+            // bootstrap-feed proxy instead (resolves by id or slug).
+            try {
+                const res = await fetch(`/api/public/job?id=${encodeURIComponent(initialData.id)}`);
+                if (res.ok) {
+                    const detail = await res.json() as { opportunity?: Opportunity };
+                    if (!cancelled && detail?.opportunity?.description) {
+                        setOpp((prev) =>
+                            prev && prev.id === detail.opportunity!.id
+                                ? { ...prev, description: detail.opportunity!.description, isSaved: prev.isSaved || false }
+                                : prev
+                        );
+                    }
+                }
+            } catch {
+                // description stays hidden; not an error surface
+            }
+        }).catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, [initialData, initialDataId, initialHasDescription]);
+
+    /**
+     * Loads the opportunity for `id`, or adopts server-provided `initialData`.
+     *
+     * `opp?.id` is deliberately NOT a dependency. It was read in the guard below
+     * and written in the same body, so the effect re-ran after every `setOpp`:
+     * once per load, and because this effect also cleared
+     * `hasTrackedDetailViewRef`, that re-run made the analytics effect below
+     * fire `jobView` a second time for the same opportunity.
+     * `appliedInitialDataIdRef` answers "have I already adopted this one?"
+     * without reading the state this effect writes, so the effect now runs only
+     * when the request actually changes: a new `id`, new `initialData`, or a new
+     * `loadOpportunity` (which is a `useCallback` on `[id]`).
+     */
+    useEffect(() => {
+        // Mint a generation before anything else, so an in-flight load for the
+        // previous `id` is already superseded by the time this effect returns.
+        const requestId = ++loadRequestIdRef.current;
+
+        if (initialData) {
+            if (appliedInitialDataIdRef.current !== initialData.id) {
+                appliedInitialDataIdRef.current = initialData.id;
+                setOpp(initialData);
+                setIsLoading(false);
+                setError(null);
+            }
+            return;
+        }
+        appliedInitialDataIdRef.current = null;
+
+        if (id) {
+            setOpp(null);
+            setIsLoading(true);
+            setError(null);
+            hasAttemptedLoadRef.current = true;
+
+            const cached = getRecentViewedByIdOrSlug(id);
+            if (cached) {
+                setOpp(cached);
+                setIsLoading(false);
+            }
+
+            void loadOpportunity(requestId);
+
+            // Reset only on a genuine fetch, and only for the opportunity now
+            // loading. Leaving these on the `initialData` path is what keeps a
+            // re-render from re-firing the view-tracking effect for the
+            // opportunity already on screen.
+            hasTrackedDetailViewRef.current = false;
+            hasShownNotFoundRef.current = false;
+        }
+    }, [id, initialData, initialDataId, loadOpportunity]);
+
+    useEffect(() => {
+        if (opp) {
+            saveRecentViewed(opp);
+        }
+    }, [opp]);
+
+    useEffect(() => {
+        if (opp && !hasTrackedDetailViewRef.current) {
+            hasTrackedDetailViewRef.current = true;
+            analytics.jobView(opp.id, opp.company, parseOpportunityLocation(opp.locations).shortLabel);
+        }
+    }, [opp]);
+
+    const relatedOpps = useMemo(() => {
+        if (initialRelatedData && initialRelatedData.length > 0) {
+            return initialRelatedData;
+        }
+        if (!opp?.id) {
+            return [];
+        }
+        if (allOpps && allOpps.length > 0) {
+            return getRelatedOpportunities(opp, allOpps);
+        }
+        const cachedFeed = readFeedCache();
+        if (cachedFeed?.opportunities && cachedFeed.opportunities.length > 0) {
+            return getRelatedOpportunities(opp, cachedFeed.opportunities);
+        }
+        return [];
+    }, [opp, allOpps, initialRelatedData]);
+
+    const isLoadingRelated = false;
+
+    const handleToggleSave = async () => {
+        if (!opp) return;
+        if (!user) {
+            // The caller decides how to ask (in-page modal vs toast). It also
+            // gets the chance to remember the intent, so a user who signs up
+            // from here still ends up with the job saved.
+            if (onAuthRequired) {
+                onAuthRequired({ type: 'save-job', jobId: opp.id });
+                return;
+            }
+            promptLoginToast('Sign in to save opportunities');
+            return;
+        }
+
+        try {
+            await toggleSavedJob(opp.id);
+            toast.success(savedJobsMap[opp.id] ? 'Removed from bookmarks' : 'Added to bookmarks');
+        } catch (err: unknown) {
+            toastError(err, 'Failed to update bookmark');
+        }
+    };
+
+    const handleSetAction = async (actionType: ActionType) => {
+        if (!opp) return;
+        if (!user) {
+            promptLoginToast('Sign in to update application status');
+            return;
+        }
+
+        const currentAction = trackerMap[opp.id]?.status;
+        const isTogglingOff = currentAction === actionType;
+
+        setIsUpdatingAction(true);
+        try {
+            saveOpportunityToCache(opp);
+            if (isTogglingOff) {
+                await removeTrackerItem(opp.id);
+                toast.success('Removed from tracker');
+            } else {
+                await writeTrackerItem(opp.id, actionType);
+                toast.success('Progress updated');
+            }
+        } catch (err: unknown) {
+            toastError(err, 'Could not update progress');
+        } finally {
+            setIsUpdatingAction(false);
+        }
+    };
+
+    const handleApply = () => {
+        if (!opp) return;
+
+        // The employer's own site, validated before we send anyone there.
+        const target = toSafeOutboundUrl(opp.applyLink) ?? toSafeOutboundUrl(opp.companyWebsite);
+        if (!target) {
+            toast.error('No application link available');
+            return;
+        }
+
+        analytics.applyClick(opp.id, opp.company, !!opp.applyLink);
+        saveOpportunityToCache(opp);
+
+        // Arm the confirmation before opening the tab. The user stays on this
+        // page, so the flag is what tells the job page an answer is expected —
+        // and it has to survive the tab switch and any reload, hence session
+        // storage. No interstitial: the link opens in a new tab and the "Did you
+        // apply?" card appears in place, so nothing is hidden from the user.
+        setPendingAction({
+            type: 'awaiting-apply-confirmation',
+            jobId: opp.id,
+            jobPath: getOpportunityPathFromItem(opp),
+        });
+
+        // No `noopener` in the feature string: the HTML spec makes window.open
+        // return null when it is present, which would make a successful open
+        // indistinguishable from a blocked one. Sever the opener instead.
+        const opened = window.open(target, '_blank');
+        if (opened) {
+            opened.opener = null;
+        } else {
+            // Blocked. Still armed, so the card is there when they get back.
+            toast.error('Your browser blocked the new tab. Allow pop-ups, or open the link from your address bar.');
+        }
+    };
+
+    const handleShare = async () => {
+        const jobUrl = opp ? `${window.location.origin}${getOpportunityPathFromItem(opp)}` : window.location.href;
+        const shareUrl = getCleanShareUrl(jobUrl);
+        const shareData = {
+            title: `${opp?.title} at ${opp?.company}`,
+            text: `Check out this opportunity: ${opp?.title} at ${opp?.company}`,
+            url: shareUrl,
+        };
+
+        // WEB PIVOT: no backend share tracking from public web.
+        // growthApi.trackEvent('SHARE_JOB', 'opportunity_detail').catch(() => undefined);
+        try {
+            if (navigator.share) {
+                await navigator.share(shareData);
+            } else {
+                await navigator.clipboard.writeText(shareUrl);
+                toast.success('Link copied to clipboard!');
+            }
+        } catch {
+            // Share cancelled or not supported
+        }
+    };
+
+    const handleCopyLink = async () => {
+        try {
+            const jobUrl = opp ? `${window.location.origin}${getOpportunityPathFromItem(opp)}` : window.location.href;
+            await navigator.clipboard.writeText(getCleanShareUrl(jobUrl));
+            toast.success('Link copied to clipboard!');
+        } catch (err: unknown) {
+            toastError(err, 'Failed to copy link');
+        }
+    };
+
+    return {
+        opp: enrichedOpp,
+        setOpp,
+        isLoading,
+        error,
+        relatedOpps,
+        isLoadingRelated,
+        isUpdatingAction,
+        loadOpportunity,
+        handleToggleSave,
+        handleSetAction,
+        handleApply,
+        handleShare,
+        handleCopyLink
+    };
+}

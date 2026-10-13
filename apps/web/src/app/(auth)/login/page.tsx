@@ -1,0 +1,40 @@
+import type { Metadata } from 'next';
+import { Suspense } from 'react';
+import LoginForm from '@/features/auth/components/LoginForm';
+
+export const dynamic = 'force-dynamic';
+
+interface LoginPageProps {
+    searchParams: Promise<{ intent?: string; ref?: string }>;
+}
+
+export async function generateMetadata({ searchParams }: LoginPageProps): Promise<Metadata> {
+    const { intent, ref } = await searchParams;
+    const isSignupIntent = intent === 'signup' || Boolean(ref);
+
+    return isSignupIntent
+        ? {
+            title: 'Create your account',
+            description: 'Create your free FresherFlow account with your email — off-campus jobs, internships and walk-in drives for freshers.',
+            robots: {
+                index: false,
+                follow: false,
+            },
+        }
+        : {
+            title: 'Sign In',
+            description: 'Sign in to FresherFlow - find off-campus jobs, internships, and walk-in drives shared by freshers.',
+            robots: {
+                index: false,
+                follow: false,
+            },
+        };
+}
+
+export default function LoginPage() {
+    return (
+        <Suspense fallback={null}>
+            <LoginForm />
+        </Suspense>
+    );
+}

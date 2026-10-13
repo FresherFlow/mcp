@@ -1,0 +1,146 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { AtsJob } from '@fresherflow/plugins';
+import { readJsonFileSafe } from '../utils/resilient-json.js';
+import { startRun, finishRun } from '../db/repositories/discoveryRuns.js';
+import { upsertJobs } from '../db/repositories/discoveredJobs.js';
+
+const CACHE_DIR = path.resolve(process.cwd(), '.cache');
+const CACHE_FILE = path.join(CACHE_DIR, 'seen_urls.json');
+const POSTED_FILE = path.join(CACHE_DIR, 'posted_urls.json');
+
+export async function loadSeenUrlsCache(): Promise<Set<string>> {
+  // Cache state is an optimisation for dedupe, never a correctness requirement:
+  // a missing or corrupt cache file means "seen nothing yet", so the run still
+  // proceeds and simply re-encounters already-seen URLs.
+  const arr = await readJsonFileSafe<unknown[]>(CACHE_FILE);
+  if (Array.isArray(arr)) {
+    console.log(`[Cache] 📦 Loaded ${arr.length} previously seen job URLs from GitHub cache.`);
+    return new Set(arr.filter((u): u is string => typeof u === 'string'));
+  }
+  if (arr !== null) {
+    console.warn('[Cache] ⚠️ seen_urls.json is not an array — treating cache as empty.');
+  }
+  return new Set<string>();
+}
+
+export async function saveSeenUrlsCache(seenUrls: Set<string>): Promise<void> {
+  try {
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    const arr = Array.from(seenUrls).slice(-50000);
+    await fs.writeFile(CACHE_FILE, JSON.stringify(arr), 'utf8');
+    console.log(`[Cache] 💾 Saved ${arr.length} seen job URLs to cache.`);
+  } catch (err: any) {
+    console.warn(`[Cache] Note: Could not save cache: ${err.message}`);
+  }
+}
+
+export async function loadPostedUrlsCache(): Promise<string[]> {
+  // Same contract as loadSeenUrlsCache: social dedupe state is best-effort.
+  const arr = await readJsonFileSafe<unknown[]>(POSTED_FILE);
+  if (Array.isArray(arr)) {
+    console.log(`[Social] 📦 Loaded ${arr.length} previously posted job URLs from GitHub cache.`);
+    return arr.filter((u): u is string => typeof u === 'string');
+  }
+  if (arr !== null) {
+    console.warn('[Social] ⚠️ posted_urls.json is not an array — treating social cache as empty.');
+  }
+  return [];
+}
+
+export async function savePostedUrlsCache(postedUrls: string[]): Promise<void> {
+  try {
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    const arr = postedUrls.slice(-50000);
+    await fs.writeFile(POSTED_FILE, JSON.stringify(arr), 'utf8');
+    console.log(`[Social] 💾 Saved ${arr.length} posted job URLs to cache.`);
+  } catch (err: any) {
+    console.warn(`[Social] Note: Could not save posted cache: ${err.message}`);
+  }
+}
+
+export async function saveDiscoveredJobsArtifact(jobs: AtsJob[], filename = 'discovered_jobs.json') {
+  await fs.writeFile(filename, JSON.stringify(jobs, null, 2), 'utf8');
+  console.log(`[Storage] Saved ${jobs.length} jobs to ${filename}`);
+}
+
+export async function persistDiscoveredJobsToDb(jobs: AtsJob[], runId: string | null) {
+  try {
+    if (jobs.length === 0) return;
+    await upsertJobs(jobs, runId);
+    console.log(`[Storage] Successfully persisted ${jobs.length} jobs to database (discovered_jobs)`);
+  } catch (err: any) {
+    console.warn(`[Storage] Database persistence note: ${err.message}`);
+  }
+}
+
+export async function writeGitHubStepSummary(data: {
+  rawCount: number;
+  duplicateCount?: number;
+  sourceCounts: Record<string, number>;
+  sourceStats?: Record<string, { raw: number; cached: number; duplicate: number; filtered: number; dead: number; live: number }>;
+  staleCount: number;
+  locCount: number;
+  scoreCount: number;
+  verifiedJobs: AtsJob[];
+  durationSec: number;
+  hoursOld: number;
+}) {
+  const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryFile) return;
+
+  const lines: string[] = [
+    `# 🚀 External Job Search Sweep Summary`,
+    ``,
+    `| Metric | Value |`,
+    `|---|---|`,
+    `| **Freshness Cutoff** | Last ${data.hoursOld} Hours |`,
+    `| **Sweep Duration** | ${data.durationSec}s |`,
+    `| **Total Raw Fetched** | **${data.rawCount}** |`,
+    `| **Cross-Query Duplicates** | ${data.duplicateCount ?? 0} |`,
+    `| **Stale Filtered (> ${data.hoursOld}h)** | ${data.staleCount} |`,
+    `| **Non-India / Foreign Filtered** | ${data.locCount} |`,
+    `| **Non-Fresher / Senior Filtered** | ${data.scoreCount} |`,
+    `| **✅ Verified Live Jobs** | **${data.verifiedJobs.length}** |`,
+    ``,
+    `## 📊 Channel & Source Funnel Breakdown`,
+    `| Channel / Source | Raw Fetched | Already Visited (Cached) | Filtered (Loc/Senior/Stale) | Dead / Blocked | Survived (Live) |`,
+    `|---|---|---|---|---|---|`,
+  ];
+
+  if (data.sourceStats && Object.keys(data.sourceStats).length > 0) {
+    for (const [src, s] of Object.entries(data.sourceStats)) {
+      lines.push(`| **${src}** | ${s.raw} | ${s.cached} | ${s.filtered} | ${s.dead} | **${s.live}** |`);
+    }
+  } else {
+    for (const [src, count] of Object.entries(data.sourceCounts)) {
+      lines.push(`| **${src}** | ${count} | - | - | - | - |`);
+    }
+  }
+
+  lines.push(``);
+  lines.push(`## 🎯 Verified Live Fresh Jobs (${data.verifiedJobs.length})`);
+  lines.push(`| # | Role Title | Company | Location | Source | Apply Link |`);
+  lines.push(`|---|---|---|---|---|---|`);
+
+  const escapeCell = (text: string) => (text || '').replace(/\|/g, '&#124;').replace(/[\r\n]+/g, ' ').trim();
+
+  data.verifiedJobs.forEach((job, idx) => {
+    const title = escapeCell(job.title);
+    const comp = escapeCell(job.company);
+    const loc = escapeCell(job.location || 'India / Remote');
+    const src = escapeCell(job.source);
+    lines.push(`| ${idx + 1} | **${title}** | ${comp} | ${loc} | \`${src}\` | [Apply URL](${job.applyLink}) |`);
+  });
+
+  lines.push(``);
+
+  try {
+    await fs.appendFile(summaryFile, lines.join('\n') + '\n', 'utf8');
+    console.log(`[CI Summary] Successfully appended step summary to ${summaryFile}`);
+  } catch (err: any) {
+    console.warn(`[CI Summary] Failed to write GitHub step summary: ${err.message}`);
+  }
+}
+
+export { startRun, finishRun, upsertJobs };

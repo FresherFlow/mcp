@@ -1,0 +1,55 @@
+import { Opportunity } from '@fresherflow/types';
+
+export type RootStackParamList = {
+  // Tab Roots
+  Feed: undefined;
+  Explore: undefined;
+  Share: { url?: string } | undefined;
+  Saved: undefined;
+  Profile: undefined;
+
+  // Stack Screens
+  FeedList: undefined;
+  ExploreMain: undefined;
+  ShareMain: { url?: string } | undefined;
+  SavedList: undefined;
+  ProfileMain: undefined;
+  JobDetail: { opportunity?: Opportunity; job?: Opportunity; opportunityId?: string };
+  GovtJobDetail: { opportunity?: Opportunity; job?: Opportunity; opportunityId?: string };
+  GovtVacancyDetail: { vacancyTableData: { columns: string[]; rows: any[][]; notes?: string }; title?: string };
+  SectorSelection: undefined;
+  Auth: { prefilledEmail?: string; isOnboarding?: boolean } | undefined;
+  Main: undefined;
+  EditEducation: { startInEditMode?: boolean; isOnboarding?: boolean } | undefined;
+  EditDemographics: { isOnboarding?: boolean } | undefined;
+  EditSkills: { startInEditMode?: boolean; isOnboarding?: boolean } | undefined;
+  EditPreferences: { startInEditMode?: boolean; isOnboarding?: boolean } | undefined;
+  CareerProfile: { isOnboarding?: boolean } | undefined;
+  MyShares: { initialTab?: 'JOBS' | 'RESOURCES' } | undefined;
+  Dashboard: undefined;
+  Invite: undefined;
+  Appearance: undefined;
+  AppPreferences: undefined;
+  BottomNavPreferences: undefined;
+  FeedTabsPreferences: undefined;
+  AccountManage: undefined;
+  Notifications: undefined;
+  ContributorProfile: { userId: string };
+  About: undefined;
+  CompanyDetail: { companyName: string; companyLogoUrl?: string; website?: string; currentJob?: Opportunity; initialTab?: 'JOBS' | 'RESOURCES' };
+  AlertSettings: undefined;
+  ApplicationTracker: undefined;
+  Feedback: undefined;
+  Legal: undefined;
+  ChooseUsername: { isOnboarding?: boolean } | undefined;
+  ProfileChooseUsername: { isOnboarding?: boolean } | undefined;
+  OTAUpdates: undefined;
+  FollowedCompanies: undefined;
+  Onboarding: undefined;
+  StoryIntro: undefined;
+  TaskSetupList: undefined;
+  SkillSearch: { skill: string };
+  ResourcesDirectory: { filterSkills?: string[] } | undefined;
+  ResourceGroupDetail: { groupType: 'COMPANY' | 'SKILL'; groupId: string; groupName: string; logoUrl?: string };
+  ResourceCollectionDetail: { collectionId: string; collectionTitle: string };
+};

@@ -1,0 +1,115 @@
+﻿import type { Opportunity } from '@fresherflow/types';
+import MapPinIcon from '@heroicons/react/24/outline/MapPinIcon';
+import CheckCircleIcon from '@heroicons/react/24/solid/CheckCircleIcon';
+import ArrowTopRightOnSquareIcon from '@heroicons/react/24/outline/ArrowTopRightOnSquareIcon';
+import ClipboardDocumentCheckIcon from '@heroicons/react/24/outline/ClipboardDocumentCheckIcon';
+import { getDriveRequiredDocuments, getOsmEmbedUrl } from '@/features/jobs/utils/walkinMapUtils';
+
+type WalkInDetailsCardProps = {
+    walkInDetails: NonNullable<Opportunity['walkInDetails']>;
+};
+
+export function WalkInDetailsCard({ walkInDetails }: WalkInDetailsCardProps) {
+    const lat = walkInDetails.latitude;
+    const lng = walkInDetails.longitude;
+    const hasCoords = lat !== undefined && lng !== undefined;
+    const query = hasCoords ? `${lat},${lng}` : walkInDetails.venueAddress;
+    const navUrl = walkInDetails.venueLink || (query ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(query)}` : null);
+    // OSM cannot geocode an address without a key, so a venue with no stored
+    // coordinates gets the directions link and no map rather than a map that
+    // silently centres on null island.
+    const embedUrl = getOsmEmbedUrl(walkInDetails);
+    const documents = getDriveRequiredDocuments(walkInDetails);
+
+    /* Neutral surface, warning only as an accent tint.
+       This used to be `bg-warning/80 dark:bg-warning/20` with `text-warning`
+       headings — the same token as both surface and content. In light mode
+       that is amber text on an 80%-opaque amber panel (~2:1) and the heading
+       was unreadable; dark mode got a different treatment at /20 rather than
+       a matched pair. Now the panel is `bg-card`, warning carries only the
+       border and the icon, and every run of text is `text-foreground` — which
+       also fixes the amber-on-white contrast the old heading had. */
+    return (
+        <div className="bg-card border border-warning/30 rounded-2xl p-4 mb-4 space-y-3.5 shadow-sm">
+            <div className="flex items-center justify-between">
+                <h3 className="font-bold text-sm text-foreground flex items-center gap-2">
+                    <MapPinIcon className="w-4 h-4 text-warning" /> Walk-In Interview Details
+                </h3>
+                {walkInDetails.techCluster && (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-warning/15 text-foreground border border-warning/30">
+                        {walkInDetails.techCluster}
+                    </span>
+                )}
+            </div>
+            
+            {/* Venue & Directions */}
+            {walkInDetails.venueAddress && (
+                <div className="flex flex-col gap-1 text-sm bg-muted/60 p-3 rounded-xl">
+                    <div className="flex items-start justify-between gap-2">
+                        <div>
+                            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Venue Location</span>
+                            <p className="text-foreground font-medium text-xs sm:text-sm mt-0.5">{walkInDetails.venueAddress}</p>
+                        </div>
+                        {navUrl && (
+                            <a 
+                                href={navUrl}
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="shrink-0 px-2.5 py-1 text-xs font-semibold rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-1 shadow-xs"
+                            >
+                                <span>Directions</span>
+                                <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+                            </a>
+                        )}
+                    </div>
+
+                    {/* Venue Embedded Map — keyless OpenStreetMap */}
+                    {embedUrl && (
+                        <div className="w-full h-44 mt-2 rounded-lg overflow-hidden relative">
+                            <iframe
+                                title="Venue Map Location"
+                                className="w-full h-full border-0 dark:invert dark:hue-rotate-180 dark:contrast-90 dark:brightness-95 transition-all duration-300"
+                                src={embedUrl}
+                                loading="lazy"
+                                referrerPolicy="no-referrer-when-downgrade"
+                            />
+                        </div>
+                    )}
+                </div>
+            )}
+            
+            {/* Date & Time Row */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                {walkInDetails.dateRange && (
+                    <div className="bg-muted/60 p-2.5 rounded-xl">
+                        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">Drive Dates</span>
+                        <span className="text-foreground font-bold mt-0.5 block">{walkInDetails.dateRange}</span>
+                    </div>
+                )}
+                
+                {(walkInDetails.timeRange || walkInDetails.reportingTime) && (
+                    <div className="bg-muted/60 p-2.5 rounded-xl">
+                        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">Reporting Time</span>
+                        <span className="text-foreground font-bold mt-0.5 block">{walkInDetails.timeRange || walkInDetails.reportingTime}</span>
+                    </div>
+                )}
+            </div>
+
+            {/* Documents checklist */}
+            <div className="bg-muted/60 p-3 rounded-xl">
+                <p className="text-xs font-bold text-foreground mb-2 flex items-center gap-1.5">
+                    <ClipboardDocumentCheckIcon className="w-4 h-4 text-primary" />
+                    <span>Mandatory Documents to Carry:</span>
+                </p>
+                <ul className="grid grid-cols-1 gap-1.5 text-xs text-foreground/90">
+                    {documents.map(doc => (
+                        <li key={doc} className="flex items-center gap-2 font-medium">
+                            <CheckCircleIcon className="w-3.5 h-3.5 text-success shrink-0" />
+                            <span>{doc}</span>
+                        </li>
+                    ))}
+                </ul>
+            </div>
+        </div>
+    );
+}

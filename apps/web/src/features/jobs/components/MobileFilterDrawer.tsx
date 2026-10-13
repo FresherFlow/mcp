@@ -1,0 +1,716 @@
+'use client';
+
+import { useState, useEffect, useMemo } from 'react';
+import { XMarkIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { Button } from '@/ui/Button';
+import { SkillPill } from '@/features/jobs/components/SkillPill';
+import { FRESHER_EXPERIENCE_VALUE } from '@/features/jobs/components/JobFilterBar';
+import { cn } from '@fresherflow/ui/utils/cn';
+import type { WalkinDrivePeriod } from '@/features/jobs/utils/walkinMapUtils';
+import {
+    getTypeOptions,
+    getFeedKind,
+    isGovtFeed,
+    supportsDimension,
+} from '@/features/jobs/utils/feedKinds';
+import { Drawer, DrawerContent } from '@/ui/drawer';
+import { CURATED_ROLE_KEYWORDS } from '@/features/jobs/domain/taxonomy/constants';
+
+// Removed hardcoded locations
+
+const DRIVE_DATE_OPTIONS: Array<{ value: WalkinDrivePeriod; label: string }> = [
+    { value: 'all', label: 'Any date' },
+    { value: 'today', label: 'Today' },
+    { value: 'thisWeek', label: 'This week' },
+    { value: 'next30Days', label: 'Next 30 days' },
+];
+
+const DRIVE_RADIUS_OPTIONS: Array<{ value: number | null; label: string }> = [
+    { value: null, label: 'Any distance' },
+    { value: 5, label: 'Within 5 km' },
+    { value: 10, label: 'Within 10 km' },
+    { value: 25, label: 'Within 25 km' },
+    { value: 50, label: 'Within 50 km' },
+];
+
+const GOVT_SECTORS = ['Defense', 'Railways', 'Banking', 'Teaching', 'Police', 'SSC / UPSC', 'PSU'];
+const GOVT_QUALIFICATIONS = ['10th Pass', '12th Pass', 'Diploma', 'Graduate', 'Postgraduate'];
+const CORP_COURSES = ['B.Tech/B.E.', 'M.C.A.', 'MBA', 'B.Sc/B.Com/B.A', 'Diploma'];
+
+// Removed hardcoded years and skills
+
+type OpenSection = 'type' | 'experience' | 'location' | 'year' | 'sector' | 'qualification' | 'course' | 'workMode' | 'skills' | 'source' | 'company' | 'driveDate' | 'driveRadius' | 'role' | 'closingSoon' | 'saved' | null;
+
+/**
+ * Role options, from the curated taxonomy — the same source `boardFilters` uses
+ * to write `?role=` and the same source the desktop `JobFilterBar` reads. The
+ * drawer previously had no role section at all while the desktop bar had one,
+ * so a phone user could not set or clear a role that a saved search or a role
+ * board had put in the URL.
+ */
+const ROLE_OPTIONS = Object.values(CURATED_ROLE_KEYWORDS).map((role) => role.label);
+
+interface MobileFilterDrawerProps {
+    isOpen: boolean;
+    onClose: () => void;
+    draftType?: string | null;
+    setDraftType?: (type: string | null) => void;
+    draftLoc: string | null;
+    setDraftLoc: (loc: string | null) => void;
+    draftYear: number | null;
+    setDraftYear: (year: number | null) => void;
+    draftClosingSoon: boolean;
+    setDraftClosingSoon?: (val: boolean) => void;
+    draftShowOnlySaved: boolean;
+    setDraftShowOnlySaved?: (val: boolean) => void;
+    draftRole?: string[];
+    setDraftRole?: (val: string[]) => void;
+    draftSector: string | null;
+    setDraftSector: (val: string | null) => void;
+    draftQualification: string | null;
+    setDraftQualification: (val: string | null) => void;
+    draftCourse: string | null;
+    setDraftCourse: (val: string | null) => void;
+    draftWorkMode?: 'REMOTE' | 'HYBRID' | 'ON_SITE' | null;
+    setDraftWorkMode?: (val: 'REMOTE' | 'HYBRID' | 'ON_SITE' | null) => void;
+    draftSkills?: string[];
+    setDraftSkills?: (val: string[]) => void;
+    draftSource?: string[];
+    setDraftSource?: (val: string[]) => void;
+    draftCompany?: string[];
+    setDraftCompany?: (val: string[]) => void;
+    draftExperience?: string[];
+    setDraftExperience?: (val: string[]) => void;
+    isLoggedIn: boolean;
+    pageType?: string;
+    draftDriveDate?: WalkinDrivePeriod;
+    setDraftDriveDate?: (v: WalkinDrivePeriod) => void;
+    draftDriveRadiusKm?: number | null;
+    setDraftDriveRadiusKm?: (v: number | null) => void;
+    hasUserLocation?: boolean;
+    aggregates?: {
+        locations: Record<string, number>;
+        skills: Record<string, number>;
+        sources: Record<string, number>;
+        years: Record<string, number>;
+        companies?: Record<string, number>;
+    };
+    onApply: () => void;
+    onClear: () => void;
+    /** Live match count for the current drafts (same pipeline as Apply). */
+    draftMatchCount?: number | null;
+    /** Profile-owned dims (city/batch/workMode) — captioned so seeded sections read as profile-applied. */
+    profileOwnedDims?: string[];
+}
+
+function Section({
+    title,
+    isOpen,
+    onToggle,
+    children,
+}: {
+    title: string;
+    isOpen: boolean;
+    onToggle: () => void;
+    children: React.ReactNode;
+}) {
+    return (
+        <div className="border-b border-border/70">
+            <button
+                type="button"
+                onClick={onToggle}
+                className="w-full flex items-center justify-between py-4 focus-visible:ring-2 focus-visible:ring-primary focus:outline-none cursor-pointer"
+            >
+                <span className="text-sm font-semibold text-foreground">{title}</span>
+                <ChevronDownIcon className={cn('w-4 h-4 text-muted-foreground transition-transform', isOpen && 'rotate-180')} />
+            </button>
+            {isOpen ? <div className="pb-4 space-y-2">{children}</div> : null}
+        </div>
+    );
+}
+
+function Pill({
+    active,
+    children,
+    onClick,
+    disabled = false,
+}: {
+    active: boolean;
+    children: React.ReactNode;
+    onClick: () => void;
+    disabled?: boolean;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            className={cn(
+                'px-3.5 py-1.5 rounded-full text-xs transition cursor-pointer focus-visible:ring-2 focus-visible:ring-primary focus:outline-none select-none',
+                active ? 'bg-primary text-primary-foreground font-semibold shadow-sm' : 'bg-muted/70 text-foreground hover:bg-muted',
+                disabled && 'opacity-50 cursor-not-allowed'
+            )}
+        >
+            {children}
+        </button>
+    );
+}
+
+export function MobileFilterDrawer({
+    isOpen,
+    onClose,
+    draftType,
+    setDraftType,
+    draftLoc,
+    setDraftLoc,
+    draftYear,
+    setDraftYear,
+    draftClosingSoon,
+    setDraftClosingSoon,
+    draftShowOnlySaved,
+    setDraftShowOnlySaved,
+    draftRole,
+    setDraftRole,
+    draftSector,
+    setDraftSector,
+    draftQualification,
+    setDraftQualification,
+    draftCourse,
+    setDraftCourse,
+    draftWorkMode,
+    setDraftWorkMode,
+    draftSkills,
+    setDraftSkills,
+    draftSource,
+    setDraftSource,
+    draftCompany,
+    setDraftCompany,
+    draftExperience,
+    setDraftExperience,
+    pageType,
+    draftDriveDate,
+    setDraftDriveDate,
+    draftDriveRadiusKm,
+    setDraftDriveRadiusKm,
+    hasUserLocation,
+    aggregates,
+    onApply,
+    onClear,
+    isLoggedIn = false,
+    draftMatchCount = null,
+    profileOwnedDims = [],
+}: MobileFilterDrawerProps) {
+    const [openSection, setOpenSection] = useState<OpenSection>(setDraftType ? 'type' : 'location');
+  // Per-feed type options, shared with the desktop bars so the three feeds
+  // cannot drift. The government feed does not offer "Walk-ins", which
+  // filtered it to nothing.
+  const feedKind = getFeedKind(pageType);
+  const TYPE_OPTIONS = useMemo(
+    () => getTypeOptions(feedKind).map((o) => ({ ...o, value: o.value ?? '' })),
+    [feedKind]
+  );
+    const [locSearch, setLocSearch] = useState('');
+    const [companySearch, setCompanySearch] = useState('');
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                onClose();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, onClose]);
+
+    if (!isOpen) return null;
+
+    const activeCount = [
+        draftType,
+        draftLoc,
+        draftYear,
+        draftSector,
+        draftQualification,
+        draftCourse,
+        draftSource && draftSource.length > 0 ? 'source' : null,
+        draftCompany && draftCompany.length > 0 ? 'company' : null,
+        draftExperience && draftExperience.length > 0 ? 'experience' : null,
+        draftClosingSoon ? 'closing' : null,
+        draftShowOnlySaved ? 'saved' : null,
+    ].filter(Boolean).length;
+
+    const sortedLocations = Object.entries(aggregates?.locations || {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([loc, count]) => ({ loc, count }));
+    const query = locSearch.trim().toLowerCase();
+    const filteredLocations = query ? sortedLocations.filter(l => l.loc.toLowerCase().includes(query)) : sortedLocations;
+
+    const sortedSkills = Object.entries(aggregates?.skills || {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([skill, count]) => ({ skill, count }));
+        
+    const sortedSources = Object.entries(aggregates?.sources || {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([source, count]) => ({ source, count }));
+
+    const sortedYears = Object.entries(aggregates?.years || {})
+        .sort((a, b) => Number(b[0]) - Number(a[0]))
+        .map(([year, count]) => ({ year: Number(year), count }));
+
+    const sortedCompanies = Object.entries(aggregates?.companies || {})
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([company, count]) => ({ company, count }));
+    const compQuery = companySearch.trim().toLowerCase();
+    const filteredCompanies = compQuery ? sortedCompanies.filter(c => c.company.toLowerCase().includes(compQuery)) : sortedCompanies;
+
+    return (
+        <Drawer open={isOpen} onOpenChange={(open) => !open && onClose()} modal={false}>
+            {/* DrawerContent owns the portal, the transparent overlay and the grab handle. */}
+            <DrawerContent variant="panel" className="lg:hidden overscroll-contain">
+                    <div className="px-5 pb-3 border-b border-border/70 flex items-start justify-between">
+                        <div>
+                            <h3 id="mobile-filter-title" className="text-xl font-bold text-foreground">Filters</h3>
+                            <p className="text-sm text-muted-foreground">{activeCount} filters active</p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="h-10 w-10 rounded-xl border border-border bg-card text-muted-foreground hover:bg-muted transition-colors flex items-center justify-center focus-visible:ring-2 focus-visible:ring-primary focus:outline-none"
+                            aria-label="Close filters"
+                        >
+                            <XMarkIcon className="w-5 h-5" />
+                        </button>
+                    </div>
+
+                    <div className="px-5 overflow-y-auto overscroll-contain flex-1">
+                    {setDraftType ? (
+                        <Section
+                            title="Type"
+                            isOpen={openSection === 'type'}
+                            onToggle={() => setOpenSection(openSection === 'type' ? null : 'type')}
+                        >
+                            <div className="flex flex-wrap gap-2">
+                                {TYPE_OPTIONS.map((option) => (
+                                    <Pill
+                                        key={option.label}
+                                        active={(draftType || '') === option.value}
+                                        onClick={() => setDraftType(option.value || null)}
+                                    >
+                                        {option.label}
+                                    </Pill>
+                                ))}
+                            </div>
+                        </Section>
+                    ) : null}
+
+                    {setDraftExperience ? (
+                        <Section
+                            title="Experience"
+                            isOpen={openSection === 'experience'}
+                            onToggle={() => setOpenSection(openSection === 'experience' ? null : 'experience')}
+                        >
+                            <div className="flex flex-wrap gap-2">
+                                <Pill active={(draftExperience ?? []).length === 0} onClick={() => setDraftExperience([])}>Any</Pill>
+                                {(() => {
+                                    const fresherActive = (draftExperience ?? []).includes(FRESHER_EXPERIENCE_VALUE);
+                                    return (
+                                        <Pill
+                                            active={fresherActive}
+                                            onClick={() => setDraftExperience(
+                                                fresherActive
+                                                    ? (draftExperience ?? []).filter(e => e !== FRESHER_EXPERIENCE_VALUE)
+                                                    : [...(draftExperience ?? []), FRESHER_EXPERIENCE_VALUE]
+                                            )}
+                                        >
+                                            Fresher
+                                        </Pill>
+                                    );
+                                })()}
+                            </div>
+                        </Section>
+                    ) : null}
+
+                    {setDraftRole && supportsDimension(feedKind, 'role') ? (
+                        <Section
+                            title="Role"
+                            isOpen={openSection === 'role'}
+                            onToggle={() => setOpenSection(openSection === 'role' ? null : 'role')}
+                        >
+                            <div className="flex flex-wrap gap-2">
+                                <Pill
+                                    active={(draftRole ?? []).length === 0}
+                                    onClick={() => setDraftRole([])}
+                                >
+                                    Any
+                                </Pill>
+                                {ROLE_OPTIONS.map((role) => {
+                                    const isSelected = (draftRole ?? []).includes(role);
+                                    return (
+                                        <Pill
+                                            key={role}
+                                            active={isSelected}
+                                            onClick={() => setDraftRole(
+                                                isSelected
+                                                    ? (draftRole ?? []).filter((r) => r !== role)
+                                                    : [...(draftRole ?? []), role]
+                                            )}
+                                        >
+                                            {role}
+                                        </Pill>
+                                    );
+                                })}
+                            </div>
+                        </Section>
+                    ) : null}
+
+                    {/* Closing soon / Saved only. Both were in the active-filter
+                        count and both had a removable chip, but neither had a
+                        control, so a phone user who landed on a link setting
+                        either could only clear it by editing the URL. */}
+                    {setDraftClosingSoon ? (
+                        <Section
+                            title="Deadline"
+                            isOpen={openSection === 'closingSoon'}
+                            onToggle={() => setOpenSection(openSection === 'closingSoon' ? null : 'closingSoon')}
+                        >
+                            <div className="flex flex-wrap gap-2">
+                                <Pill active={!draftClosingSoon} onClick={() => setDraftClosingSoon(false)}>Any deadline</Pill>
+                                <Pill active={draftClosingSoon} onClick={() => setDraftClosingSoon(true)}>Closing soon</Pill>
+                            </div>
+                        </Section>
+                    ) : null}
+                    {setDraftShowOnlySaved ? (
+                        <Section
+                            title="Saved"
+                            isOpen={openSection === 'saved'}
+                            onToggle={() => setOpenSection(openSection === 'saved' ? null : 'saved')}
+                        >
+                            <div className="flex flex-wrap gap-2">
+                                <Pill active={!draftShowOnlySaved} onClick={() => setDraftShowOnlySaved(false)}>All listings</Pill>
+                                <Pill active={draftShowOnlySaved} onClick={() => setDraftShowOnlySaved(true)}>Saved only</Pill>
+                            </div>
+                            {!isLoggedIn && (
+                                <p className="text-xs text-muted-foreground pt-1">
+                                    Sign in to narrow these listings to the ones you saved.
+                                </p>
+                            )}
+                        </Section>
+                    ) : null}
+
+                    <Section
+                        title="Location"
+                        isOpen={openSection === 'location'}
+                        onToggle={() => setOpenSection(openSection === 'location' ? null : 'location')}
+                    >
+                        <div className="space-y-3">
+                            {profileOwnedDims.includes('city') && (
+                                <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-hidden="true" />
+                                    From your profile
+                                </p>
+                            )}
+                            <input
+                                type="text"
+                                value={locSearch}
+                                onChange={e => setLocSearch(e.target.value)}
+                                placeholder="Search city or state..."
+                                className="w-full h-9 px-3 rounded-xl border border-border bg-card text-xs text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+                            />
+                            <div className="space-y-3 max-h-52 overflow-y-auto overscroll-contain pr-1">
+                                <div className="flex flex-wrap gap-2">
+                                    <Pill active={draftLoc === null} onClick={() => setDraftLoc(null)}>All Locations</Pill>
+                                </div>
+
+                                {filteredLocations.length > 0 && (
+                                    <div className="space-y-1.5">
+                                        <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground/70">Locations</p>
+                                        <div className="flex flex-wrap gap-2">
+                                            {filteredLocations.map(({ loc, count }) => (
+                                                <Pill
+                                                    key={loc}
+                                                    active={draftLoc === loc}
+                                                    onClick={() => setDraftLoc(loc)}
+                                                >
+                                                    {loc} ({count})
+                                                </Pill>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </Section>
+
+                    {isGovtFeed(feedKind) && (
+                        <>
+                            <Section
+                                title="Sector"
+                                isOpen={openSection === 'sector'}
+                                onToggle={() => setOpenSection(openSection === 'sector' ? null : 'sector')}
+                            >
+                                <div className="flex flex-wrap gap-2">
+                                    <Pill active={draftSector === null} onClick={() => setDraftSector(null)}>Any</Pill>
+                                    {GOVT_SECTORS.map((sector) => (
+                                        <Pill
+                                            key={sector}
+                                            active={draftSector === sector}
+                                            onClick={() => setDraftSector(sector)}
+                                        >
+                                            {sector}
+                                        </Pill>
+                                    ))}
+                                </div>
+                            </Section>
+
+                            <Section
+                                title="Qualification"
+                                isOpen={openSection === 'qualification'}
+                                onToggle={() => setOpenSection(openSection === 'qualification' ? null : 'qualification')}
+                            >
+                                <div className="flex flex-wrap gap-2">
+                                    <Pill active={draftQualification === null} onClick={() => setDraftQualification(null)}>Any</Pill>
+                                    {GOVT_QUALIFICATIONS.map((qual) => (
+                                        <Pill
+                                            key={qual}
+                                            active={draftQualification === qual}
+                                            onClick={() => setDraftQualification(qual)}
+                                        >
+                                            {qual}
+                                        </Pill>
+                                    ))}
+                                </div>
+                            </Section>
+                        </>
+                    )}
+
+                    {!isGovtFeed(feedKind) && (
+                        <>
+                            {/* Walk-in dates and distance. A drive is a physical
+                                errand, so "when" and "how far" decide whether it
+                                is worth the trip. These were missing here
+                                entirely, so the desktop-only date and distance
+                                filters could never be reached on a phone. */}
+                            {supportsDimension(feedKind, 'driveDate') && setDraftDriveDate && (
+                                <Section
+                                    title="When"
+                                    isOpen={openSection === 'driveDate'}
+                                    onToggle={() => setOpenSection(openSection === 'driveDate' ? null : 'driveDate')}
+                                >
+                                    <div className="flex flex-wrap gap-2">
+                                        {DRIVE_DATE_OPTIONS.map(opt => (
+                                            <Pill
+                                                key={String(opt.value)}
+                                                active={draftDriveDate === opt.value}
+                                                onClick={() => setDraftDriveDate(opt.value)}
+                                            >
+                                                {opt.label}
+                                            </Pill>
+                                        ))}
+                                    </div>
+                                </Section>
+                            )}
+                            {supportsDimension(feedKind, 'driveRadius') && hasUserLocation && setDraftDriveRadiusKm && (
+                                <Section
+                                    title="Distance"
+                                    isOpen={openSection === 'driveRadius'}
+                                    onToggle={() => setOpenSection(openSection === 'driveRadius' ? null : 'driveRadius')}
+                                >
+                                    <div className="flex flex-wrap gap-2">
+                                        {DRIVE_RADIUS_OPTIONS.map(opt => (
+                                            <Pill
+                                                key={String(opt.value)}
+                                                active={draftDriveRadiusKm === opt.value}
+                                                onClick={() => setDraftDriveRadiusKm(opt.value)}
+                                            >
+                                                {opt.label}
+                                            </Pill>
+                                        ))}
+                                    </div>
+                                </Section>
+                            )}
+                            <Section
+                                title="Course"
+                                isOpen={openSection === 'course'}
+                                onToggle={() => setOpenSection(openSection === 'course' ? null : 'course')}
+                            >
+                                <div className="flex flex-wrap gap-2">
+                                    <Pill active={draftCourse === null} onClick={() => setDraftCourse(null)}>Any</Pill>
+                                    {CORP_COURSES.map((course) => (
+                                        <Pill
+                                            key={course}
+                                            active={draftCourse === course}
+                                            onClick={() => setDraftCourse(course)}
+                                        >
+                                            {course}
+                                        </Pill>
+                                    ))}
+                                </div>
+                            </Section>
+                            {setDraftSource && (
+                            <Section
+                                title="Source"
+                                isOpen={openSection === 'source'}
+                                onToggle={() => setOpenSection(openSection === 'source' ? null : 'source')}
+                            >
+                                <div className="flex flex-wrap gap-2">
+                                    {sortedSources.map(({ source: src, count }) => {
+                                        const isSelected = draftSource?.includes(src);
+                                        return (
+                                        <Pill
+                                            key={src}
+                                            active={isSelected || false}
+                                            onClick={() => {
+                                                const newSource = isSelected
+                                                    ? (draftSource || []).filter(s => s !== src)
+                                                    : [...(draftSource || []), src];
+                                                setDraftSource(newSource);
+                                            }}
+                                        >
+                                            {src} ({count})
+                                        </Pill>
+                                    )})}
+                                </div>
+                            </Section>
+                            )}
+                            <Section
+                                title="Passout Year"
+                                isOpen={openSection === 'year'}
+                                onToggle={() => setOpenSection(openSection === 'year' ? null : 'year')}
+                            >
+                                {profileOwnedDims.includes('batch') && (
+                                    <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground pb-2">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-hidden="true" />
+                                        From your profile
+                                    </p>
+                                )}
+                                <div className="flex flex-wrap gap-2">
+                                    <Pill active={draftYear === null} onClick={() => setDraftYear(null)}>Any</Pill>
+                                    {sortedYears.map(({ year, count }) => (
+                                        <Pill
+                                            key={year}
+                                            active={draftYear === year}
+                                            onClick={() => setDraftYear(year)}
+                                        >
+                                            {year} ({count})
+                                        </Pill>
+                                    ))}
+                                </div>
+                            </Section>
+                            {setDraftCompany && (
+                            <Section
+                                title="Company"
+                                isOpen={openSection === 'company'}
+                                onToggle={() => setOpenSection(openSection === 'company' ? null : 'company')}
+                            >
+                                <div className="space-y-3">
+                                    <input
+                                        type="text"
+                                        value={companySearch}
+                                        onChange={e => setCompanySearch(e.target.value)}
+                                        placeholder="Search companies..."
+                                        className="w-full h-9 px-3 rounded-xl border border-border bg-card text-xs text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+                                    />
+                                    <div className="max-h-52 overflow-y-auto overscroll-contain pr-1 flex flex-wrap gap-2">
+                                        {filteredCompanies.map(({ company, count }) => {
+                                            const isSelected = draftCompany?.includes(company);
+                                            return (
+                                                <Pill
+                                                    key={company}
+                                                    active={isSelected || false}
+                                                    onClick={() => {
+                                                        const next = isSelected
+                                                            ? (draftCompany || []).filter(c => c !== company)
+                                                            : [...(draftCompany || []), company];
+                                                        setDraftCompany(next);
+                                                    }}
+                                                >
+                                                    {company} ({count})
+                                                </Pill>
+                                            );
+                                        })}
+                                        {filteredCompanies.length === 0 && (
+                                            <p className="text-xs text-muted-foreground py-2">No companies found</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </Section>
+                            )}
+                            {setDraftWorkMode && (
+                            <Section
+                                title="Work Mode"
+                                isOpen={openSection === 'workMode'}
+                                onToggle={() => setOpenSection(openSection === 'workMode' ? null : 'workMode')}
+                            >
+                                {profileOwnedDims.includes('workMode') && (
+                                    <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground pb-2">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-hidden="true" />
+                                        From your profile
+                                    </p>
+                                )}
+                                <div className="flex flex-wrap gap-2">
+                                    <Pill active={draftWorkMode === null} onClick={() => setDraftWorkMode(null)}>Any</Pill>
+                                    <Pill active={draftWorkMode === 'REMOTE'} onClick={() => setDraftWorkMode('REMOTE')}>Remote</Pill>
+                                    <Pill active={draftWorkMode === 'HYBRID'} onClick={() => setDraftWorkMode('HYBRID')}>Hybrid</Pill>
+                                    <Pill active={draftWorkMode === 'ON_SITE'} onClick={() => setDraftWorkMode('ON_SITE')}>On-site</Pill>
+                                </div>
+                            </Section>
+                            )}
+                            {setDraftSkills && (
+                            <Section
+                                title="Skills"
+                                isOpen={openSection === 'skills'}
+                                onToggle={() => setOpenSection(openSection === 'skills' ? null : 'skills')}
+                            >
+                                <div className="flex flex-wrap gap-2">
+                                    {sortedSkills.map(({ skill, count }) => {
+                                        const isSelected = draftSkills?.includes(skill);
+                                        return (
+                                        <Pill
+                                            key={skill}
+                                            active={isSelected || false}
+                                            onClick={() => {
+                                                const newSkills = isSelected
+                                                    ? (draftSkills || []).filter(s => s !== skill)
+                                                    : [...(draftSkills || []), skill];
+                                                setDraftSkills(newSkills);
+                                            }}
+                                        >
+                                            <SkillPill skill={skill} className="h-auto" />
+                                            <span className="ml-1 opacity-75">({count})</span>
+                                        </Pill>
+                                    )})}
+                                </div>
+                            </Section>
+                            )}
+                        </>
+                    )}
+
+
+                </div>
+
+                <div className="border-t border-border p-4">
+                    <div className="grid grid-cols-2 gap-3">
+                        <button
+                            type="button"
+                            onClick={onClear}
+                            className="h-12 rounded-xl border border-border bg-card text-sm font-medium text-foreground hover:bg-muted/60 transition-colors focus-visible:ring-2 focus-visible:ring-primary focus:outline-none"
+                        >
+                            Clear
+                        </button>
+                        <Button onClick={onApply} size="sm">
+                            {draftMatchCount == null
+                                ? 'Apply filters'
+                                : `Show ${draftMatchCount.toLocaleString('en-IN')} job${draftMatchCount === 1 ? '' : 's'}`}
+                        </Button>
+                    </div>
+                </div>
+            </DrawerContent>
+        </Drawer>
+    );
+}
+
+
+
+
+
+

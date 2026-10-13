@@ -1,0 +1,2329 @@
+import React, { memo, useCallback, useMemo, useRef } from 'react';
+import {
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  Platform,
+  StatusBar,
+  Animated,
+  Easing,
+  Dimensions,
+  InteractionManager,
+  LayoutAnimation,
+  Image,
+} from 'react-native';
+import Reanimated from 'react-native-reanimated';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+import {
+  IndianRupee,
+  ExternalLink,
+  Bookmark,
+  MapPin,
+  Share2,
+  ShieldCheck,
+  Clock,
+  Users,
+  Bell,
+  ChevronLeft,
+  GraduationCap,
+  Calendar,
+  Cpu,
+  Briefcase,
+  Trophy,
+  Flag,
+  LayoutDashboard,
+  Eye,
+  MoreVertical,
+  Award,
+  Copy,
+  Send,
+  MessageCircle,
+  Check,
+  AlertCircle,
+  ChevronRight,
+  ChevronDown,
+  PlayCircle,
+  FolderOpen,
+  Compass,
+  Globe,
+  FileText,
+  BookOpen,
+} from 'lucide-react-native';
+
+import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { CommonActions } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { useTheme } from '@/contexts/ThemeContext';
+import { alpha } from '@/theme';
+import { useFollows } from '@/hooks/useFollows';
+import { RootStackParamList } from '@/navigation/types';
+import { useOpportunityDetail } from '@/hooks/useOpportunityDetail';
+import { useProfile } from '@/hooks/useProfile';
+import { renderFormattedDescription } from '@/system/components/DescriptionParser';
+import { markJobAsSeen } from '@/utils/cache/seenJobs';
+import { formatSalary } from '@/utils/formatters';
+import { openExternalURL } from '@/utils/browser';
+
+import { useNotifications } from '@fresherflow/frontend-core';
+import { useToast } from '@/contexts/ToastContext';
+import { useAuthStore } from '@/store/useAuthStore';
+import { useUIStore } from '@/store/useUIStore';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import { differenceInCalendarDays } from 'date-fns';
+import * as StoreReview from 'expo-store-review';
+import { 
+    BottomSheetModal, 
+    BottomSheetView, 
+    BottomSheetBackdrop,
+    BottomSheetBackdropProps 
+} from '@gorhom/bottom-sheet';
+import * as Clipboard from 'expo-clipboard';
+import { Share, Linking } from 'react-native';
+import { WhatsAppIcon, DiscordIcon } from '@/system/components/SocialIcons';
+
+
+import { TYPOGRAPHY } from '@/system/constants/typography';
+
+// Premium System
+import { toTitleCase, formatListToTitleCase } from '@/utils/text';
+import { getPrimaryEmploymentType, getTypeDisplayLabel, isGovernmentOpportunity, isInternshipOpportunity, isWalkinOpportunity } from '@/utils/taxonomy';
+import { Share2 as LucideShare } from 'lucide-react-native';
+const Linkedin = LucideShare;
+const Twitter = LucideShare;
+const Instagram = LucideShare;
+
+import { Screen, Section } from '@/system/layout/Layout';
+import { PremiumHeader, SurfaceCard } from '@/system/components/PremiumPrimitives';
+import { ReportActionSheet, ReportActionSheetRef } from '@/system/components/ReportActionSheet';
+import { FeedbackReason, ActionType, Opportunity } from '@fresherflow/types';
+import { MatchScoreGauge } from '@/system/components/MatchScoreGauge';
+import { CompanyLogo } from '@fresherflow/ui';
+import { mScale, SPACING, RADIUS } from '../../system/constants/dimensions';
+import { CommentSection } from '@/system/components/CommentSection';
+import { TrackerStatusSheet, TrackerStatusSheetRef } from '@/system/components/TrackerStatusSheet';
+import { ApplyTrackerPromptSheet, ApplyTrackerPromptSheetRef } from '@/system/components/ApplyTrackerPromptSheet';
+import { PremiumActionSheet } from '@/system/components/PremiumActionSheet';
+import { SuccessModal } from '@/system/components/SuccessModal';
+import { ComplexityCard } from './components/ComplexityCard';
+import { useResourcesFeed } from '@/hooks/useResourcesFeed';
+import { useSavedJobs } from '@/hooks/useSavedJobs';
+import { useSavedItems } from '@/hooks/useSavedItems';
+import { ResourceCollectionCard } from '@/system/components/ResourceCollectionCard';
+
+type Props = NativeStackScreenProps<RootStackParamList, 'JobDetail'>;
+
+
+const JobDetailScreen: React.FC<Props> = memo(({ route, navigation }: Props) => {
+  const { currentTheme } = useTheme();
+  const { user } = useAuthStore();
+  const isAnonymous = !user || user.isAnonymous;
+
+  const { profile } = useProfile();
+  const userProfileSkills = useMemo(() => {
+      return (profile?.skills || []).map(s => s.toLowerCase());
+  }, [profile?.skills]);
+
+  const { isFollowing, follow, unfollow } = useFollows();
+  const insets = useSafeAreaInsets();
+
+  const opportunityId = useMemo(
+    () => route.params?.opportunityId ?? route.params?.opportunity?.id ?? route.params?.job?.id ?? null,
+    [route.params],
+  );
+
+  const initialOpp = useMemo(
+    () => route.params?.opportunity ?? route.params?.job ?? null,
+    [route.params],
+  );
+
+    const {
+    opportunity,
+    loading,
+    error,
+    eligibilityReason,
+    isSaved,
+    toggleSave,
+    isTracking,
+    getStatus,
+    updateStatus,
+    toggleTracking,
+    handleShare,
+    handleApply,
+    handleReport: reportToApi,
+    similarOpportunities,
+    checkingExpired,
+  } = useOpportunityDetail(
+    opportunityId,
+    route.params?.opportunity ?? route.params?.job ?? null,
+    navigation
+  );
+
+  const isGovt = useMemo(
+    () => {
+        const opp = opportunity || initialOpp;
+        return opp ? isGovernmentOpportunity(opp) : false;
+    },
+    [opportunity, initialOpp],
+  );
+
+  const { resources } = useResourcesFeed();
+  const { isSavedResource, toggleSaveResource } = useSavedJobs();
+  const { isItemSaved, toggleSaveItem } = useSavedItems();
+  const matchedResources = useMemo(() => {
+    if (!opportunity) return [];
+    
+    const companyName = (opportunity.company || '').toLowerCase().trim();
+    const jobSkills = (opportunity.requiredSkills || []).map((s: string) => s.toLowerCase().trim());
+    
+    const matched: typeof resources = [];
+    const matchedIds = new Set<string>();
+
+    // 1. Prioritize company-matched collection (limit 1)
+    if (companyName) {
+      const companyRes = resources.find(res => 
+        res.company && res.company.toLowerCase().trim() === companyName
+      );
+      if (companyRes) {
+        matched.push(companyRes);
+        matchedIds.add(companyRes.id);
+      }
+    }
+
+    // 2. Map other collections, limit to at most 1 collection per skill
+    for (const skill of jobSkills) {
+      if (matched.length >= 3) break; // Capped at 3 collections total
+      
+      const skillRes = resources.find(res => 
+        !matchedIds.has(res.id) &&
+        res.skills.some((s: string) => s.toLowerCase().trim() === skill)
+      );
+      
+      if (skillRes) {
+        matched.push(skillRes);
+        matchedIds.add(skillRes.id);
+      }
+    }
+
+    return matched;
+  }, [opportunity, resources]);
+
+  const getDomainInfo = (urlStr: string) => {
+    try {
+      const normalized = urlStr.indexOf('://') !== -1 ? urlStr : `https://${urlStr}`;
+      const parsed = new URL(normalized);
+      return {
+        host: parsed.hostname.toLowerCase(),
+        pathname: parsed.pathname.toLowerCase(),
+        search: parsed.search.toLowerCase()
+      };
+    } catch {
+      return { host: '', pathname: '', search: '' };
+    }
+  };
+
+  // Derive colour from URL — URL is the single source of truth
+  const getColorByUrl = (url: string, opacity: number = 1) => {
+    const { host, pathname } = getDomainInfo(url);
+    const hostParts = host.split('.');
+    let hex = currentTheme.colors.primary;
+    if (host === 'youtube.com' || host === 'www.youtube.com' || host === 'youtu.be') {
+      hex = '#EF4444';
+    } else if (pathname.endsWith('.pdf')) {
+      hex = '#EA580C';
+    } else if (host === 'roadmap.sh' || host.endsWith('.roadmap.sh')) {
+      hex = '#3B82F6';
+    } else if (
+      host === 'drive.google.com' || host.endsWith('.drive.google.com') ||
+      host === 'dropbox.com' || host.endsWith('.dropbox.com') ||
+      hostParts.includes('onedrive') ||
+      host === 'box.com' || host.endsWith('.box.com') ||
+      hostParts.includes('sharepoint')
+    ) {
+      hex = '#10B981';
+    } else {
+      hex = '#8B5CF6';
+    }
+    return alpha(hex, opacity);
+  };
+
+  const getIconByUrl = (url: string) => {
+    const size = 18;
+    const { host, pathname, search } = getDomainInfo(url);
+    const hostParts = host.split('.');
+    const color = getColorByUrl(url, 1);
+    if (host === 'youtube.com' || host === 'www.youtube.com' || host === 'youtu.be') {
+      return <PlayCircle size={size} color={color} />;
+    }
+    if (pathname.endsWith('.pdf')) {
+      return <FileText size={size} color={color} />;
+    }
+    if (host === 'roadmap.sh' || host.endsWith('.roadmap.sh')) {
+      return <Compass size={size} color={color} />;
+    }
+    if (
+      host === 'drive.google.com' || host.endsWith('.drive.google.com') ||
+      host === 'dropbox.com' || host.endsWith('.dropbox.com') ||
+      hostParts.includes('onedrive') ||
+      host === 'box.com' || host.endsWith('.box.com') ||
+      hostParts.includes('sharepoint')
+    ) {
+      const isFolder =
+        pathname.indexOf('folder') !== -1 ||
+        pathname.indexOf('folders') !== -1 ||
+        search.indexOf('id=') !== -1;
+      return isFolder
+        ? <FolderOpen size={size} color={color} />
+        : <FileText size={size} color={color} />;
+    }
+    return <Globe size={size} color={color} />;
+  };
+
+
+  const isFollowingCompany = useMemo(() => {
+    if (!opportunity?.company) return false;
+    const companyKey = opportunity.companyWebsite || opportunity.company;
+    return isFollowing('COMPANY', companyKey);
+  }, [isFollowing, opportunity?.company, opportunity?.companyWebsite]);
+
+  const { showSuccess } = useToast();
+  const { showToast } = useNotifications();
+
+  const handleOpenShare = useCallback(() => {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      if (opportunity) {
+          useUIStore.getState().shareSheet.open(opportunity, 'inside');
+      }
+  }, [opportunity]);
+
+  const handleBack = useCallback(() => {
+      if (navigation.canGoBack()) {
+          navigation.goBack();
+      } else {
+          navigation.dispatch(
+              CommonActions.reset({
+                  index: 0,
+                  routes: [{ name: 'Main' }],
+              })
+          );
+      }
+  }, [navigation]);
+
+  const reportSheetRef = useRef<ReportActionSheetRef>(null);
+  const scrollY = React.useRef(new Animated.Value(0)).current;
+  const fabAnim = React.useRef(new Animated.Value(1)).current;
+  
+  const [isSelectionExpanded, setIsSelectionExpanded] = React.useState(false);
+  const [checkedDocuments, setCheckedDocuments] = React.useState<Record<string, boolean>>({});
+
+  const shrinkFab = () => {
+    Animated.timing(fabAnim, {
+        toValue: 0,
+        duration: 150,
+        useNativeDriver: false,
+        easing: Easing.out(Easing.quad)
+    }).start();
+  };
+
+  const expandFab = () => {
+    Animated.timing(fabAnim, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: false,
+        easing: Easing.out(Easing.quad)
+    }).start();
+  };
+
+  const headerOpacity = scrollY.interpolate({
+    inputRange: [0, 60, 100],
+    outputRange: [0, 0, 1],
+    extrapolate: 'clamp',
+  });
+
+  const headerTranslateY = scrollY.interpolate({
+    inputRange: [0, 100],
+    outputRange: [-10, 0],
+    extrapolate: 'clamp',
+  });
+
+  const heroTranslateY = scrollY.interpolate({
+    inputRange: [-100, 0, 200],
+    outputRange: [50, 0, -50],
+    extrapolate: 'clamp',
+  });
+
+  const heroScale = scrollY.interpolate({
+    inputRange: [-100, 0],
+    outputRange: [1.1, 1],
+    extrapolate: 'clamp',
+  });
+
+  const heroOpacity = scrollY.interpolate({
+    inputRange: [0, 200],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+
+  // Entry animations — skip them if data is already available (fast tap from feed)
+  const hasInitialData = !!(route.params?.opportunity ?? route.params?.job);
+  const fadeAnim1 = React.useRef(new Animated.Value(hasInitialData ? 1 : 0)).current;
+  const fadeAnim2 = React.useRef(new Animated.Value(hasInitialData ? 1 : 0)).current;
+  const fadeAnim3 = React.useRef(new Animated.Value(hasInitialData ? 1 : 0)).current;
+  const fadeAnim4 = React.useRef(new Animated.Value(hasInitialData ? 1 : 0)).current;
+  const fadeAnim5 = React.useRef(new Animated.Value(hasInitialData ? 1 : 0)).current;
+  const fadeAnim6 = React.useRef(new Animated.Value(hasInitialData ? 1 : 0)).current;
+  const fadeAnim7 = React.useRef(new Animated.Value(hasInitialData ? 1 : 0)).current;
+
+  const handleReport = useCallback(() => {
+    reportSheetRef.current?.present();
+  }, []);
+
+
+
+  const lastAnimatedId = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    if (!loading && opportunity && opportunityId && lastAnimatedId.current !== opportunityId) {
+      void markJobAsSeen(opportunityId);
+      lastAnimatedId.current = opportunityId;
+      // Only animate in if we started from 0 (no initial data was passed)
+      if (!hasInitialData) {
+        Animated.stagger(80, [
+          Animated.spring(fadeAnim1, { toValue: 1, useNativeDriver: true, tension: 60, friction: 8 }),
+          Animated.spring(fadeAnim2, { toValue: 1, useNativeDriver: true, tension: 60, friction: 8 }),
+          Animated.spring(fadeAnim3, { toValue: 1, useNativeDriver: true, tension: 60, friction: 8 }),
+          Animated.spring(fadeAnim4, { toValue: 1, useNativeDriver: true, tension: 60, friction: 8 }),
+          Animated.spring(fadeAnim5, { toValue: 1, useNativeDriver: true, tension: 60, friction: 8 }),
+          Animated.spring(fadeAnim6, { toValue: 1, useNativeDriver: true, tension: 60, friction: 8 }),
+          Animated.spring(fadeAnim7, { toValue: 1, useNativeDriver: true, tension: 60, friction: 8 }),
+        ]).start();
+      }
+    }
+  }, [loading, opportunityId]);
+
+  React.useEffect(() => {
+    if (isGovt) {
+      const target = opportunity || initialOpp;
+      if (target) {
+        navigation.replace('GovtJobDetail', {
+          opportunityId: target.id,
+          opportunity: target,
+          job: target
+        });
+      }
+    }
+  }, [isGovt, opportunity, initialOpp, navigation]);
+
+
+
+    const trackerSheetRef = useRef<TrackerStatusSheetRef>(null);
+    const applyPromptSheetRef = useRef<ApplyTrackerPromptSheetRef>(null);
+
+    const handleToggleSave = useCallback(() => {
+        if (!opportunity) return;
+        const wasSaved = isSaved(opportunity.id);
+        toggleSave(opportunity);
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        showSuccess(wasSaved ? 'Opportunity removed from saves' : 'Opportunity saved successfully!');
+    }, [opportunity, isSaved, toggleSave, showSuccess]);
+
+    const handlePromptStatusSelect = useCallback((status: ActionType) => {
+        if (!opportunity) return;
+        updateStatus(opportunity.id, status);
+        if (status === ActionType.APPLIED) {
+            showSuccess('Marked as Applied! Track status in Settings > Application Tracker.');
+        } else if (status === ActionType.PLANNED) {
+            showSuccess('Saved to Application Tracker.');
+        }
+    }, [opportunity, updateStatus, showSuccess]);
+
+    const handleStatusSelect = useCallback(async (status: ActionType) => {
+        if (!opportunity) return;
+        trackerSheetRef.current?.dismiss();
+        const isCurrentlyTracking = isTracking(opportunity.id);
+        
+        if (isCurrentlyTracking) {
+            await updateStatus(opportunity.id, status);
+        } else {
+            await toggleTracking(opportunity, status);
+        }
+        
+        showSuccess(`Updated status to ${status.charAt(0) + status.slice(1).toLowerCase()}`);
+    }, [opportunity, isTracking, updateStatus, toggleTracking, showSuccess]);
+
+    const [successModalVisible, setSuccessModalVisible] = React.useState(false);
+    const [menuVisible, setMenuVisible] = React.useState(false);
+    const [isTransitioning, setIsTransitioning] = React.useState(true);
+    const [isScrolled, setIsScrolled] = React.useState(false);
+    const isScrolledRef = React.useRef(false);
+
+    React.useEffect(() => {
+        const task = InteractionManager.runAfterInteractions(() => {
+            setIsTransitioning(false);
+        });
+        return () => task.cancel();
+    }, []);
+
+    const openTrackerSheet = useCallback(() => {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        trackerSheetRef.current?.present();
+    }, []);
+
+    const expiryInfo = useMemo(() => {
+        if (!opportunity?.expiresAt) return null;
+        const expiryDate = new Date(opportunity.expiresAt);
+        if (isNaN(expiryDate.getTime())) return null;
+
+        const diffDays = differenceInCalendarDays(expiryDate, new Date());
+
+        if (diffDays < 0) {
+            return { label: 'expired', color: currentTheme.colors.error, type: 'EXPIRED' };
+        }
+        if (diffDays === 0) {
+            return { label: 'expires today', color: currentTheme.colors.warning, type: 'URGENT' };
+        }
+        if (diffDays === 1) {
+            return { label: 'expires tomorrow', color: currentTheme.colors.warning, type: 'URGENT' };
+        }
+        if (diffDays > 30) {
+            return null; // Don't show banner for far-future expiries (e.g. 350 days)
+        }
+
+        return {
+            label: `expires in ${diffDays} days`,
+            color: diffDays <= 3 ? currentTheme.colors.warning : currentTheme.colors.textMuted,
+            type: diffDays <= 3 ? 'URGENT' : 'NORMAL'
+        };
+    }, [opportunity?.expiresAt, currentTheme]);
+
+  if (isGovt || (!opportunity && loading) || isTransitioning) {
+    return (
+      <View style={[styles.center, { backgroundColor: currentTheme.colors.background }]}>
+        <ActivityIndicator size="large" color={currentTheme.colors.primary} />
+        {checkingExpired && (
+          <Text style={{ marginTop: 16, color: currentTheme.colors.textMuted, fontSize: 14, fontWeight: '600' }}>
+            Checking archived jobs...
+          </Text>
+        )}
+      </View>
+    );
+  }
+
+  if (!opportunity) {
+    return (
+      <View style={[styles.center, { backgroundColor: currentTheme.colors.background, padding: 32 }]}>
+        <Briefcase size={48} color={currentTheme.colors.textMuted} style={{ marginBottom: 16 }} />
+        <Text style={{ color: currentTheme.colors.text, fontSize: 18, fontWeight: '700', marginBottom: 8, textAlign: 'center' }}>
+          Opportunity not found
+        </Text>
+        <Text style={{ color: currentTheme.colors.textMuted, fontSize: 14, textAlign: 'center', marginBottom: 28, lineHeight: 20 }}>
+          This job may have been removed or expired.
+        </Text>
+        <TouchableOpacity
+          onPress={handleBack}
+          style={{
+            backgroundColor: currentTheme.colors.primary,
+            paddingHorizontal: 28,
+            paddingVertical: 12,
+            borderRadius: 12,
+          }}
+        >
+          <Text style={{ color: currentTheme.colors.background, fontWeight: '700', fontSize: 15 }}>Browse Jobs</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+    return (
+    <Screen safe={false}>
+      <StatusBar barStyle={currentTheme.mode === 'dark' ? 'light-content' : 'dark-content'} />
+
+      {/* Floating Header */}
+      <Animated.View 
+        pointerEvents={isScrolled ? 'auto' : 'none'}
+        style={[
+        styles.stickyHeader,
+        {
+          opacity: headerOpacity,
+          height: insets.top + 90,
+          transform: [{ translateY: headerTranslateY }],
+          paddingTop: insets.top + 10,
+          backgroundColor: currentTheme.colors.background,
+          justifyContent: 'center',
+        }
+      ]}>
+        <PremiumHeader
+            title={opportunity.title}
+            compact
+            titleStyle={{ fontSize: mScale(24), fontWeight: '900', lineHeight: 28 }}
+            showBack
+            onBack={handleBack}
+            rightSlot={
+                <View style={{ flexDirection: 'row', gap: mScale(4), alignItems: 'center' }}>
+                    <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.iconBtn}>
+                        <MoreVertical size={mScale(20)} color={currentTheme.colors.text} />
+                    </TouchableOpacity>
+                </View>
+            }
+        />
+      </Animated.View>
+
+      {/* Static Overlays (Buttons always visible) */}
+      <View style={[styles.staticControls, { top: insets.top + 10 }]}>
+         <TouchableOpacity onPress={handleBack} style={[styles.controlBtn, { backgroundColor: 'transparent' }]}>
+            <ChevronLeft size={24} color={currentTheme.colors.text} />
+         </TouchableOpacity>
+         <View style={{ flexDirection: 'row', gap: 10 }}>
+            <TouchableOpacity onPress={handleToggleSave} style={[styles.controlBtn, { backgroundColor: 'transparent' }]}>
+                <Bookmark
+                    size={20}
+                    color={isSaved(opportunity.id) ? currentTheme.colors.primary : currentTheme.colors.text}
+                    fill={isSaved(opportunity.id) ? currentTheme.colors.primary : 'transparent'}
+                />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleOpenShare} style={[styles.controlBtn, { backgroundColor: 'transparent' }]}>
+                <Share2 size={20} color={currentTheme.colors.text} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setMenuVisible(true)} style={[styles.controlBtn, { backgroundColor: 'transparent' }]}>
+                <MoreVertical size={20} color={currentTheme.colors.text} />
+            </TouchableOpacity>
+         </View>
+      </View>
+
+      <Animated.ScrollView
+        onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+            { 
+              useNativeDriver: true,
+              listener: (event: any) => {
+                const y = event.nativeEvent.contentOffset.y;
+                if (y > 20 && !isScrolledRef.current) {
+                  isScrolledRef.current = true;
+                  setIsScrolled(true);
+                } else if (y <= 20 && isScrolledRef.current) {
+                  isScrolledRef.current = false;
+                  setIsScrolled(false);
+                }
+              }
+            }
+        )}
+        onScrollBeginDrag={shrinkFab}
+        onMomentumScrollBegin={shrinkFab}
+        onMomentumScrollEnd={expandFab}
+        onScrollEndDrag={expandFab}
+        scrollEventThrottle={16}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        contentContainerStyle={styles.scrollContent}
+      >
+        <View style={styles.container}>
+            {/* Hero Section */}
+            <Animated.View style={[styles.hero, { opacity: heroOpacity, transform: [{ translateY: heroTranslateY }, { scale: heroScale }] }]}>
+                <LinearGradient
+                    colors={[alpha(currentTheme.colors.primary, 0.15), 'transparent']}
+                    style={styles.heroGradient}
+                />
+                <View style={styles.titleRow}>
+                    <Reanimated.View sharedTransitionTag={`title-${opportunity.id}`} style={{ flex: 1 }}>
+                        <Text 
+                            style={[styles.title, { color: currentTheme.colors.text, flex: 1 }]}
+                            numberOfLines={2}
+                            adjustsFontSizeToFit
+                            minimumFontScale={0.7}
+                        >
+                            {opportunity.title}
+                        </Text>
+                    </Reanimated.View>
+                </View>
+                {opportunity.matchReason && opportunity.matchScore !== undefined && opportunity.matchScore > 0 && (
+                    <Text style={[
+                        styles.matchReasonText,
+                        { color: opportunity.isEligible === false ? currentTheme.colors.error : currentTheme.colors.primary }
+                    ]}>
+                        {opportunity.matchReason}
+                    </Text>
+                )}
+
+                <View style={styles.companyAreaContainer}>
+                    <TouchableOpacity
+                        style={styles.companyArea}
+                        onPress={() => navigation.push('CompanyDetail', {
+                            companyName: opportunity.company,
+                            companyLogoUrl: opportunity.companyLogoUrl ?? undefined,
+                            website: opportunity.companyWebsite ?? undefined,
+                            currentJob: opportunity
+                        })}
+                    >
+                        <Reanimated.View sharedTransitionTag={`logo-${opportunity.id}`}>
+                            <CompanyLogo
+                                name={opportunity.company}
+                                website={opportunity.companyWebsite}
+                                applyLink={opportunity.applyLink}
+                                logoUrl={opportunity.companyLogoUrl}
+                                size={56}
+                            />
+                        </Reanimated.View>
+                        <View style={{ flex: 1, gap: 4 }}>
+                            <Text style={[styles.companyName, { color: currentTheme.colors.text }]}>{opportunity.company}</Text>
+                            <View style={styles.badgeRow}>
+                                <View style={[styles.typeBadge, { backgroundColor: alpha(currentTheme.colors.primary, 0.1) }]}>
+                                    <Text style={[styles.typeText, { color: currentTheme.colors.primary }]}>{getTypeDisplayLabel(opportunity)}</Text>
+                                </View>
+                                {(opportunity.clicksCount || 0) > 200 && (
+                                    <View style={[styles.typeBadge, { backgroundColor: alpha(currentTheme.colors.error, 0.1), borderColor: alpha(currentTheme.colors.error, 0.2), borderWidth: 1 }]}>
+                                        <Text style={[styles.typeText, { color: currentTheme.colors.error }]}>🔥 Trending</Text>
+                                    </View>
+                                )}
+                                {(() => {
+                                  const postedAt = opportunity.postedAt ? new Date(opportunity.postedAt) : null;
+                                  if (!postedAt || isNaN(postedAt.getTime())) return null;
+                                  const diff = Math.max(0, differenceInCalendarDays(new Date(), postedAt));
+                                  const label = diff === 0 ? 'Posted Today' : diff === 1 ? 'Posted 1d Ago' : `Posted ${diff}d Ago`;
+                                  return (
+                                    <View style={[styles.verifiedBadge, { backgroundColor: alpha(currentTheme.colors.primary, 0.05) }]}>
+                                        <Text style={[styles.typeText, { color: currentTheme.colors.primary, fontSize: 9 }]}>{label}</Text>
+                                    </View>
+                                  );
+                                })()}
+                                {(() => {
+                                    const isReferral = !!opportunity.referredByUsername;
+                                    const sharedBy = opportunity.referredByUsername || (opportunity.user as any)?.username || (opportunity.rawIngestions?.[0] as any)?.creator?.username;
+                                    if (!sharedBy) return null;
+                                    
+                                    // Use a darker yellow/orange for light mode or fallback to primary if yellow is completely unreadable
+                                    const warningColor = currentTheme.mode === 'dark' ? currentTheme.colors.warning : '#A16207';
+                                    const badgeColor = isReferral ? currentTheme.colors.success : warningColor;
+                                    const badgeText = isReferral ? `Referred by @${sharedBy}` : `Shared by @${sharedBy}`;
+                                    return (
+                                        <View style={[styles.verifiedBadge, { backgroundColor: alpha(badgeColor, 0.1), borderColor: alpha(badgeColor, 0.2), borderWidth: 1 }]}>
+                                            <Text style={[styles.typeText, { color: badgeColor, fontSize: 9 }]}>{badgeText}</Text>
+                                        </View>
+                                    );
+                                })()}
+                            </View>
+                        </View>
+                    </TouchableOpacity>
+                    {!isAnonymous && (
+                        <TouchableOpacity
+                            onPress={() => {
+                                const companyKey = opportunity.companyWebsite || opportunity.company;
+                                isFollowing('COMPANY', companyKey) ? unfollow('COMPANY', companyKey) : follow('COMPANY', companyKey);
+                            }}
+                            style={[
+                                styles.followButton,
+                                {
+                                    backgroundColor: isFollowing('COMPANY', opportunity.companyWebsite || opportunity.company) 
+                                        ? currentTheme.colors.primary 
+                                        : alpha(currentTheme.colors.primary, 0.1),
+                                }
+                            ]}
+                        >
+                            <Text style={[
+                                styles.followButtonText, 
+                                { 
+                                    color: isFollowing('COMPANY', opportunity.companyWebsite || opportunity.company) 
+                                        ? currentTheme.colors.background 
+                                        : currentTheme.colors.primary 
+                                }
+                            ]}>
+                                {isFollowing('COMPANY', opportunity.companyWebsite || opportunity.company) ? 'Following' : 'Follow'}
+                            </Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
+            </Animated.View>
+
+            {/* Momentum Stats */}
+            <Animated.View style={{ opacity: fadeAnim1, transform: [{ translateY: fadeAnim1.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                <SurfaceCard style={[styles.momentumBar, { backgroundColor: alpha(currentTheme.colors.text, 0.02), marginBottom: expiryInfo ? SPACING.sm : SPACING.xl }]}>
+                <View style={styles.momentumItem}>
+                    <Eye size={16} color={currentTheme.colors.primary} />
+                    <Text style={[styles.momentumText, { color: currentTheme.colors.text }]}>
+                        <Text style={{ color: currentTheme.colors.textMuted }}>Views</Text> {opportunity.clicksCount || 0}
+                    </Text>
+                </View>
+                <View style={[styles.momentumDivider, { backgroundColor: currentTheme.colors.border }]} />
+                <View style={styles.momentumItem}>
+                    <Briefcase size={16} color={currentTheme.colors.success} />
+                    <Text style={[styles.momentumText, { color: currentTheme.colors.text }]}>
+                        <Text style={{ color: currentTheme.colors.textMuted }}>Applied</Text> {opportunity.appliedCount || 0}
+                    </Text>
+                </View>
+                {(opportunity.matchScore !== undefined && opportunity.matchScore > 0 && opportunity.isEligible !== false) && (
+                    <>
+                        <View style={[styles.momentumDivider, { backgroundColor: currentTheme.colors.border }]} />
+                        <View style={styles.momentumItem}>
+                            <MatchScoreGauge
+                                score={opportunity.matchScore ?? 0}
+                                isEligible={true}
+                                size={22}
+                                strokeWidth={2.5}
+                            />
+                            <Text style={[styles.momentumText, { color: currentTheme.colors.text, marginLeft: 6 }]}>
+                                <Text style={{ color: currentTheme.colors.textMuted }}>
+                                    Fit
+                                </Text>{' '}
+                                {`${opportunity.matchScore ?? 0}%`}
+                            </Text>
+                        </View>
+                    </>
+                )}
+                </SurfaceCard>
+            </Animated.View>
+
+            {expiryInfo && (
+                <Animated.View style={{ opacity: fadeAnim2, transform: [{ translateY: fadeAnim2.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.xl, gap: 6 }}>
+                        <Clock size={14} color={expiryInfo.color} />
+                        <Text style={{ fontSize: mScale(13), fontWeight: '600', color: expiryInfo.color }}>
+                            {expiryInfo.type === 'EXPIRED' ? 'This opportunity is expired' : `This opportunity ${expiryInfo.label}`}
+                        </Text>
+                    </View>
+                </Animated.View>
+            )}
+
+            {/* Quick Info Detail Card */}
+            <Animated.View style={{ opacity: fadeAnim2, transform: [{ translateY: fadeAnim2.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                <SurfaceCard style={styles.detailCard}>
+                    <View style={styles.detailRow}>
+                        <View style={styles.detailItemHalf}>
+                            <Clock size={20} color={currentTheme.colors.primary} />
+                            <View style={styles.detailContent}>
+                                <Text style={[styles.detailLabel, { color: currentTheme.colors.textMuted }]}>Work Mode</Text>
+                                <Text style={[styles.detailValue, { color: currentTheme.colors.text }]}>
+                                    {toTitleCase(opportunity.workMode) || 'Hybrid'}
+                                </Text>
+                            </View>
+                        </View>
+                        <View style={[styles.detailDividerVertical, { backgroundColor: currentTheme.colors.border }]} />
+                        <View style={styles.detailItemHalf}>
+                            <IndianRupee size={20} color={currentTheme.colors.primary} />
+                            <View style={styles.detailContent}>
+                                <Text style={[styles.detailLabel, { color: currentTheme.colors.textMuted }]}>
+                                    {isInternshipOpportunity(opportunity) ? 'Stipend' : 'Salary'}
+                                </Text>
+                                <Text style={[styles.detailValue, { color: currentTheme.colors.text }]}>
+                                    {formatSalary(opportunity) || 'NDA'}
+                                </Text>
+                            </View>
+                        </View>
+                    </View>
+
+                    <View style={[styles.detailDivider, { backgroundColor: currentTheme.colors.border }]} />
+
+                    <View style={styles.detailRow}>
+                        <View style={styles.detailItemHalf}>
+                            <Briefcase size={20} color={currentTheme.colors.primary} />
+                            <View style={styles.detailContent}>
+                                <Text style={[styles.detailLabel, { color: currentTheme.colors.textMuted }]}>Experience</Text>
+                                <Text style={[styles.detailValue, { color: currentTheme.colors.text }]}>
+                                    {opportunity.experienceMax ? `${opportunity.experienceMin || 0}-${opportunity.experienceMax}y` : 'Fresher'}
+                                </Text>
+                            </View>
+                        </View>
+                        <View style={[styles.detailDividerVertical, { backgroundColor: currentTheme.colors.border }]} />
+                        <View style={styles.detailItemHalf}>
+                            <Users size={20} color={currentTheme.colors.primary} />
+                            <View style={styles.detailContent}>
+                                <Text style={[styles.detailLabel, { color: currentTheme.colors.textMuted }]}>Employment</Text>
+                                <Text style={[styles.detailValue, { color: currentTheme.colors.text }]}>
+                                    {toTitleCase(getPrimaryEmploymentType(opportunity)?.replace(/_/g, ' ')) || (isInternshipOpportunity(opportunity) ? 'Internship' : 'Full Time')}
+                                </Text>
+                            </View>
+                        </View>
+                    </View>
+
+                    {(() => {
+                        const roleText = opportunity.jobFunction || opportunity.normalizedRole;
+                        const hasRole = !!roleText;
+                        const isRoleSmall = hasRole && roleText.length <= 18;
+                        const locationText = formatListToTitleCase(opportunity.locations) || 'Remote';
+                        const isLocationSmall = locationText.length <= 18;
+                        const canCombine = hasRole && isRoleSmall && isLocationSmall;
+
+                        if (canCombine) {
+                            return (
+                                <>
+                                    <View style={[styles.detailDivider, { backgroundColor: currentTheme.colors.border }]} />
+                                    <View style={styles.detailRow}>
+                                        <View style={styles.detailItemHalf}>
+                                            <ShieldCheck size={20} color={currentTheme.colors.primary} />
+                                            <View style={styles.detailContent}>
+                                                <Text style={[styles.detailLabel, { color: currentTheme.colors.textMuted }]} numberOfLines={1}>Functional Role</Text>
+                                                <Text 
+                                                    style={[styles.detailValue, { color: currentTheme.colors.text }]}
+                                                    numberOfLines={1} 
+                                                    adjustsFontSizeToFit
+                                                >
+                                                    {toTitleCase(roleText)}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                        <View style={[styles.detailDividerVertical, { backgroundColor: currentTheme.colors.border }]} />
+                                        <View style={styles.detailItemHalf}>
+                                            <MapPin size={20} color={currentTheme.colors.primary} />
+                                            <View style={styles.detailContent}>
+                                                <Text style={[styles.detailLabel, { color: currentTheme.colors.textMuted }]} numberOfLines={1}>Location</Text>
+                                                <Text 
+                                                    style={[styles.detailValue, { color: currentTheme.colors.text }]}
+                                                    numberOfLines={1} 
+                                                    adjustsFontSizeToFit
+                                                >
+                                                    {locationText}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                    </View>
+                                </>
+                            );
+                        }
+
+                        return (
+                            <>
+                                {hasRole && (
+                                    <>
+                                        <View style={[styles.detailDivider, { backgroundColor: currentTheme.colors.border }]} />
+                                        <View style={styles.detailItem}>
+                                            <ShieldCheck size={20} color={currentTheme.colors.primary} />
+                                            <View style={styles.detailContent}>
+                                                <Text style={[styles.detailLabel, { color: currentTheme.colors.textMuted }]}>Functional Role</Text>
+                                                <Text style={[styles.detailValue, { color: currentTheme.colors.text }]}>
+                                                    {toTitleCase(roleText)}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                    </>
+                                )}
+
+                                <View style={[styles.detailDivider, { backgroundColor: currentTheme.colors.border }]} />
+
+                                <View style={styles.detailItem}>
+                                    <MapPin size={20} color={currentTheme.colors.primary} />
+                                    <View style={styles.detailContent}>
+                                        <Text style={[styles.detailLabel, { color: currentTheme.colors.textMuted }]}>Location</Text>
+                                        <Text style={[styles.detailValue, { color: currentTheme.colors.text }]}>
+                                            {locationText}
+                                        </Text>
+                                    </View>
+                                </View>
+                            </>
+                        );
+                    })()}
+
+                </SurfaceCard>
+            </Animated.View>
+
+            {/* Drive Timeline (NEW) */}
+            {opportunity.events && opportunity.events.length > 0 && (
+                <Animated.View style={{ opacity: fadeAnim3, transform: [{ translateY: fadeAnim3.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <Section title="Recruitment Timeline">
+                        <SurfaceCard style={styles.timelineCard}>
+                            {opportunity.events.sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime()).map((event, idx) => (
+                                <View key={idx} style={[styles.timelineItem, idx === (opportunity.events?.length || 0) - 1 && { borderBottomWidth: 0 }]}>
+                                    <View style={styles.timelineMarker}>
+                                        <View style={[styles.timelineDot, { backgroundColor: new Date(event.eventDate) < new Date() ? currentTheme.colors.textMuted : currentTheme.colors.primary }]} />
+                                        {idx < (opportunity.events?.length || 0) - 1 && <View style={[styles.timelineLine, { backgroundColor: currentTheme.colors.border }]} />}
+                                    </View>
+                                    <View style={styles.timelineContent}>
+                                        <Text style={[styles.timelineTitle, { color: currentTheme.colors.text }]}>{event.title}</Text>
+                                        <Text style={[styles.timelineDate, { color: currentTheme.colors.textMuted }]}>
+                                            {new Date(event.eventDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                        </Text>
+                                        {event.notes && <Text style={[styles.timelineNotes, { color: alpha(currentTheme.colors.text, 0.6) }]}>{event.notes}</Text>}
+                                    </View>
+                                </View>
+                            ))}
+                        </SurfaceCard>
+                    </Section>
+                </Animated.View>
+            )}
+
+            {/* Incentives / Perks (Conditional) */}
+            {opportunity.incentives && (
+                <Animated.View style={{ opacity: fadeAnim3, transform: [{ translateY: fadeAnim3.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <View style={[styles.perksBox, { backgroundColor: alpha(currentTheme.colors.success, 0.05), borderColor: alpha(currentTheme.colors.success, 0.1), alignItems: 'flex-start', flexDirection: 'column', gap: 6 }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Trophy size={16} color={currentTheme.colors.success} />
+                            <Text style={{ color: currentTheme.colors.success, fontWeight: '700', fontSize: 14 }}>Perks & Incentives</Text>
+                        </View>
+                        <View style={{ width: '100%', paddingLeft: 2 }}>
+                            {renderFormattedDescription(opportunity.incentives, { theme: currentTheme })}
+                        </View>
+                    </View>
+                </Animated.View>
+            )}
+
+             {/* Requirements & Skills */}
+            <Animated.View style={{ opacity: fadeAnim3, transform: [{ translateY: fadeAnim3.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                <Section title="Candidate Requirements">
+                    <SurfaceCard style={styles.requirementCard}>
+                        <View style={styles.reqRow}>
+                            <View style={[styles.reqIcon, { backgroundColor: alpha(currentTheme.colors.primary, 0.08) }]}>
+                                <Calendar size={18} color={currentTheme.colors.primary} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                                <Text style={[styles.reqLabel, { color: currentTheme.colors.textMuted }]}>Allowed Batches</Text>
+                                <Text style={[styles.reqValue, { color: currentTheme.colors.text }]}>
+                                    {opportunity.allowedPassoutYears?.length > 0
+                                        ? opportunity.allowedPassoutYears.join(', ')
+                                        : 'Open to all years'}
+                                </Text>
+                            </View>
+                        </View>
+
+                        {/* Allowed Courses */}
+                        <View style={[styles.reqRow, { marginTop: 16 }]}>
+                            <View style={[styles.reqIcon, { backgroundColor: alpha(currentTheme.colors.primary, 0.08) }]}>
+                                <GraduationCap size={18} color={currentTheme.colors.primary} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                                <Text style={[styles.reqLabel, { color: currentTheme.colors.textMuted }]}>Allowed Courses</Text>
+                                <Text style={[styles.reqValue, { color: currentTheme.colors.text }]}>
+                                    {opportunity.allowedCourses && opportunity.allowedCourses.length > 0
+                                        ? Array.from(new Set(opportunity.allowedCourses.map(c => c.trim()).filter(Boolean))).join(', ')
+                                        : 'All Courses'}
+                                </Text>
+                            </View>
+                        </View>
+
+                        {/* Specializations */}
+                        {opportunity.allowedSpecializations && opportunity.allowedSpecializations.length > 0 && (
+                            <View style={[styles.reqRow, { marginTop: 16 }]}>
+                                <View style={[styles.reqIcon, { backgroundColor: alpha(currentTheme.colors.primary, 0.08) }]}>
+                                    <Award size={18} color={currentTheme.colors.primary} />
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                    <Text style={[styles.reqLabel, { color: currentTheme.colors.textMuted }]}>Specializations</Text>
+                                    <Text style={[styles.reqValue, { color: currentTheme.colors.text }]}>
+                                        {Array.from(new Set(opportunity.allowedSpecializations.map(s => s.trim()).filter(Boolean))).join(', ')}
+                                    </Text>
+                                </View>
+                            </View>
+                        )}
+
+                        {opportunity.requiredSkills && opportunity.requiredSkills.length > 0 && (
+                            <View style={[styles.skillSection, { borderTopWidth: 1, borderTopColor: alpha(currentTheme.colors.border, 0.1) }]}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                                    <Cpu size={14} color={currentTheme.colors.textMuted} />
+                                    <Text style={[styles.reqLabel, { color: currentTheme.colors.textMuted, marginBottom: 0 }]}>Key Skills</Text>
+                                </View>
+                                <View style={styles.tagCloud}>
+                                    {opportunity.requiredSkills.map((skill, idx) => {
+                                        const isMatched = userProfileSkills.includes(skill.toLowerCase());
+                                        return (
+                                            <TouchableOpacity 
+                                                key={idx} 
+                                                onPress={() => navigation.push('SkillSearch', { skill })}
+                                                style={[
+                                                    styles.skillTag, 
+                                                    { 
+                                                        backgroundColor: isMatched ? alpha(currentTheme.colors.success, 0.1) : alpha(currentTheme.colors.text, 0.04), 
+                                                        borderColor: isMatched ? alpha(currentTheme.colors.success, 0.3) : alpha(currentTheme.colors.border, 0.3) 
+                                                    }
+                                                ]}
+                                            >
+                                                {isMatched && (
+                                                    <Check size={12} color={currentTheme.colors.success} strokeWidth={3} />
+                                                )}
+                                                <Text style={[
+                                                    styles.skillTagText, 
+                                                    { color: isMatched ? currentTheme.colors.success : currentTheme.colors.text }
+                                                ]}>
+                                                    {toTitleCase(skill)}
+                                                </Text>
+                                            </TouchableOpacity>
+                                        );
+                                    })}
+                                </View>
+                            </View>
+                        )}
+                    </SurfaceCard>
+                </Section>
+            </Animated.View>
+
+            {/* Application Method & Preparation details (FORM / ASSESSMENT) */}
+            {opportunity.applicationDetails && (
+                <Animated.View style={{ opacity: fadeAnim3, transform: [{ translateY: fadeAnim3.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <ComplexityCard applicationDetails={opportunity.applicationDetails} />
+                </Animated.View>
+            )}
+
+            {/* Selection Process (NEW) */}
+            {opportunity.selectionProcess && (
+                <Animated.View style={{ opacity: fadeAnim4, transform: [{ translateY: fadeAnim4.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                        {(() => {
+                            const rawProcess = (opportunity.selectionProcess || '').replace(/\\n/g, '\n');
+                            const steps = rawProcess
+                                .split(/,|\n/)
+                                .map(s => s.trim().replace(/^\d+[.)\]]?\s*/, ''))
+                                .filter(Boolean);
+                            
+                            if (steps.length === 0) return null;
+
+                            return (
+                                <Section 
+                                    title="Selection Process"
+                                    rightElement={
+                                        <TouchableOpacity 
+                                            activeOpacity={0.7}
+                                            onPress={() => {
+                                                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                                                setIsSelectionExpanded(!isSelectionExpanded);
+                                            }}
+                                            style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                                        >
+                                            <View style={{ backgroundColor: alpha(currentTheme.colors.primary, 0.1), paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 }}>
+                                                <Text style={{ fontSize: 11, fontWeight: '800', color: currentTheme.colors.primary }}>{steps.length} Rounds</Text>
+                                            </View>
+                                            <View style={{ transform: [{ rotate: isSelectionExpanded ? '180deg' : '0deg' }] }}>
+                                                <ChevronDown size={20} color={currentTheme.colors.textMuted} />
+                                            </View>
+                                        </TouchableOpacity>
+                                    }
+                                >
+
+                                    {isSelectionExpanded && (
+                                        <SurfaceCard style={styles.selectionCard}>
+                                            <View style={{ paddingVertical: 8 }}>
+                                                {steps.map((step, idx) => {
+                                                    const isLeft = idx % 2 === 0;
+                                                    return (
+                                                        <View key={idx} style={{ flexDirection: 'row', minHeight: 60 }}>
+                                                            {/* Left Branch */}
+                                                            <View style={{ flex: 1, alignItems: 'flex-end', justifyContent: 'flex-start', paddingTop: 2 }}>
+                                                                {isLeft && (
+                                                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                                        <View style={{ backgroundColor: alpha(currentTheme.colors.text, 0.02), paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: alpha(currentTheme.colors.textMuted, 0.2) }}>
+                                                                            <Text style={{ fontSize: 13, fontWeight: '500', color: currentTheme.colors.textMuted, textAlign: 'center' }}>{toTitleCase(step)}</Text>
+                                                                        </View>
+                                                                        <View style={{ width: 14, height: 2, backgroundColor: alpha(currentTheme.colors.primary, 0.3), marginRight: -2 }} />
+                                                                    </View>
+                                                                )}
+                                                            </View>
+
+                                                            {/* Central Trunk */}
+                                                            <View style={{ width: 36, alignItems: 'center' }}>
+                                                                <View style={{ 
+                                                                    width: 28, 
+                                                                    height: 28, 
+                                                                    borderRadius: 14, 
+                                                                    backgroundColor: alpha(currentTheme.colors.textMuted, 0.1),
+                                                                    alignItems: 'center', 
+                                                                    justifyContent: 'center',
+                                                                    marginTop: 6,
+                                                                    zIndex: 2,
+                                                                }}>
+                                                                    <Text style={{ fontSize: 12, fontWeight: '800', color: currentTheme.colors.text }}>{idx + 1}</Text>
+                                                                </View>
+                                                                {idx < steps.length - 1 && (
+                                                                    <View style={{ 
+                                                                        width: 2, 
+                                                                        flex: 1, 
+                                                                        backgroundColor: alpha(currentTheme.colors.primary, 0.3),
+                                                                        marginTop: -2,
+                                                                        marginBottom: -6,
+                                                                        zIndex: 1
+                                                                    }} />
+                                                                )}
+                                                            </View>
+
+                                                            {/* Right Branch */}
+                                                            <View style={{ flex: 1, alignItems: 'flex-start', justifyContent: 'flex-start', paddingTop: 2 }}>
+                                                                {!isLeft && (
+                                                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                                        <View style={{ width: 14, height: 2, backgroundColor: alpha(currentTheme.colors.primary, 0.3), marginLeft: -2 }} />
+                                                                        <View style={{ backgroundColor: alpha(currentTheme.colors.text, 0.02), paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: alpha(currentTheme.colors.textMuted, 0.2) }}>
+                                                                            <Text style={{ fontSize: 13, fontWeight: '500', color: currentTheme.colors.textMuted, textAlign: 'center' }}>{toTitleCase(step)}</Text>
+                                                                        </View>
+                                                                    </View>
+                                                                )}
+                                                            </View>
+                                                        </View>
+                                                    );
+                                                })}
+                                            </View>
+                                        </SurfaceCard>
+                                    )}
+                                </Section>
+                            );
+                        })()}
+                </Animated.View>
+            )}
+                       {/* Curated Preparation Resources (Private Jobs) */}
+            {!isGovernmentOpportunity(opportunity) && matchedResources.length > 0 && (
+                <Animated.View style={{ opacity: fadeAnim4, transform: [{ translateY: fadeAnim4.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <Section 
+                        title="Preparation Resources"
+                        rightElement={
+                            <TouchableOpacity
+                                activeOpacity={0.7}
+                                onPress={() => navigation.navigate('ResourcesDirectory', { filterSkills: opportunity.requiredSkills })}
+                            >
+                                <Text style={{ fontSize: 12, fontWeight: '800', color: currentTheme.colors.primary }}>View Library</Text>
+                            </TouchableOpacity>
+                        }
+                    >
+                        <View style={{ gap: 12 }}>
+                            {matchedResources.map((res) => (
+                                <ResourceCollectionCard
+                                    key={res.id}
+                                    collection={res}
+                                    isSaved={isSavedResource(res.id)}
+                                    onToggleSave={() => toggleSaveResource(res)}
+                                    onPressTitle={() => navigation.navigate('ResourceCollectionDetail', { collectionId: res.id, collectionTitle: res.title })}
+                                    onPressViewAll={() => navigation.navigate('ResourceCollectionDetail', { collectionId: res.id, collectionTitle: res.title })}
+                                    isItemSaved={isItemSaved}
+                                    onToggleSaveItem={(item) => toggleSaveItem(item.id)}
+                                />
+                            ))}
+                        </View>
+                    </Section>
+                </Animated.View>
+            )}
+
+            {/* Notes / Highlights (NEW) */}
+            {opportunity.notesHighlights && (
+                <Animated.View style={{ opacity: fadeAnim4, transform: [{ translateY: fadeAnim4.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <Section title="Important Notes & Highlights">
+                        <SurfaceCard style={styles.selectionCard}>
+                            {renderFormattedDescription(opportunity.notesHighlights, { theme: currentTheme })}
+                        </SurfaceCard>
+                    </Section>
+                </Animated.View>
+            )}
+
+            {/* Walk-in Details (Conditional) */}
+            {isWalkinOpportunity(opportunity) && opportunity.walkInDetails && (
+                <Animated.View style={{ opacity: fadeAnim4, transform: [{ translateY: fadeAnim4.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <Section title="Walk-in Venue">
+                        <SurfaceCard style={[styles.walkInCard, { borderColor: currentTheme.colors.warning }]}>
+                            <View style={styles.walkInHeader}>
+                                <View style={[styles.walkInIcon, { backgroundColor: alpha(currentTheme.colors.warning, 0.1) }]}>
+                                    <MapPin size={20} color={currentTheme.colors.warning} />
+                                </View>
+                                <View>
+                                    <Text style={[styles.walkInTitle, { color: currentTheme.colors.text }]}>In-Person Interview</Text>
+                                    <Text style={[styles.walkInSub, { color: currentTheme.colors.textMuted }]}>{opportunity.walkInDetails.reportingTime}</Text>
+                                </View>
+                            </View>
+
+                            <TouchableOpacity
+                                style={[styles.venueButton, { backgroundColor: alpha(currentTheme.colors.primary, 0.03), borderColor: alpha(currentTheme.colors.primary, 0.1) }]}
+                                onPress={() => {
+                                    const address = opportunity.walkInDetails!.venueAddress;
+                                    const link = opportunity.walkInDetails!.venueLink || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+                                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                    void openExternalURL(link, currentTheme.colors);
+                                }}
+                                activeOpacity={0.7}
+                            >
+                                <Text style={[styles.venueText, { color: currentTheme.colors.text }]}>
+                                    {opportunity.walkInDetails.venueAddress}
+                                </Text>
+                                <View style={styles.directionsRow}>
+                                    <Compass size={14} color={currentTheme.colors.primary} />
+                                    <Text style={[styles.directionsText, { color: currentTheme.colors.primary }]}>Get Directions</Text>
+                                </View>
+                            </TouchableOpacity>
+
+                            {opportunity.walkInDetails.dates && (
+                                <View style={styles.venueDates}>
+                                    {opportunity.walkInDetails.dates.map((date, i) => (
+                                        <View key={i} style={[styles.dateChip, { backgroundColor: alpha(currentTheme.colors.text, 0.05) }]}>
+                                            <Text style={[styles.dateText, { color: currentTheme.colors.text }]}>{date}</Text>
+                                        </View>
+                                    ))}
+                                </View>
+                            )}
+
+                            {/* Documents Checklist */}
+                            {opportunity.walkInDetails.requiredDocuments && opportunity.walkInDetails.requiredDocuments.length > 0 && (
+                                <View style={{ marginTop: 16 }}>
+                                    <Text style={{ fontSize: 12, fontWeight: '800', color: currentTheme.colors.textMuted, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                                        Required Documents Checklist
+                                    </Text>
+                                    <SurfaceCard style={styles.checklistCard}>
+                                        <Text style={{ fontSize: 11, color: currentTheme.colors.textMuted, marginBottom: 12 }}>
+                                            Check off required items as you pack:
+                                        </Text>
+                                        <View style={{ gap: 12 }}>
+                                            {opportunity.walkInDetails.requiredDocuments.map((doc: string, idx: number) => {
+                                                const isChecked = !!checkedDocuments[doc];
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={idx}
+                                                        style={styles.checklistItem}
+                                                        onPress={() => {
+                                                            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                                            setCheckedDocuments(prev => ({
+                                                                ...prev,
+                                                                [doc]: !prev[doc]
+                                                            }));
+                                                        }}
+                                                        activeOpacity={0.7}
+                                                    >
+                                                        <View style={[
+                                                            styles.checkboxCircle,
+                                                            { borderColor: isChecked ? currentTheme.colors.success : currentTheme.colors.border },
+                                                            isChecked && { backgroundColor: currentTheme.colors.success }
+                                                        ]}>
+                                                            {isChecked ? (
+                                                                <Check size={12} color={currentTheme.colors.background} />
+                                                            ) : null}
+                                                        </View>
+                                                        <Text style={[
+                                                            styles.checklistText,
+                                                            { color: isChecked ? currentTheme.colors.textMuted : currentTheme.colors.text },
+                                                            isChecked && { textDecorationLine: 'line-through' }
+                                                        ]}>
+                                                            {doc}
+                                                        </Text>
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                    </SurfaceCard>
+                                </View>
+                            )}
+                        </SurfaceCard>
+                    </Section>
+                </Animated.View>
+            )}
+
+            {opportunity.governmentJobDetails && (() => {
+                const govtDetails = opportunity.governmentJobDetails as any;
+                return (
+                    <Animated.View style={{ opacity: fadeAnim5, transform: [{ translateY: fadeAnim5.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                        <Section title="Government Notice">
+                            <SurfaceCard style={[styles.govtCard, { backgroundColor: alpha(currentTheme.colors.primary, 0.02) }]}>
+                                <View style={styles.govtHeader}>
+                                    <Trophy size={20} color={currentTheme.colors.primary} />
+                                    <Text style={[styles.govtTitle, { color: currentTheme.colors.text }]}>Official Vacancy</Text>
+                                </View>
+
+                                <View style={styles.govtInfoRow}>
+                                    <View style={styles.govtInfoItem}>
+                                        <Text style={[styles.govtLabel, { color: currentTheme.colors.textMuted }]}>Vacancies</Text>
+                                        <Text style={[styles.govtValue, { color: currentTheme.colors.text }]}>{govtDetails.vacancyCount || 'As per norms'}</Text>
+                                    </View>
+                                    <View style={styles.govtInfoItem}>
+                                        <Text style={[styles.govtLabel, { color: currentTheme.colors.textMuted }]}>Last Date</Text>
+                                        <Text style={[styles.govtValue, { color: currentTheme.colors.text }]}>{govtDetails.applicationEndDate || 'Check portal'}</Text>
+                                    </View>
+                                </View>
+
+                                <View style={[styles.govtFeeBox, { backgroundColor: alpha(currentTheme.colors.text, 0.04) }]}>
+                                    <Text style={[styles.govtLabel, { color: currentTheme.colors.textMuted, marginBottom: 4 }]}>Application Fee</Text>
+                                    <Text style={[styles.govtValue, { color: currentTheme.colors.text }]}>{govtDetails.applicationFee || 'Nil / Varied'}</Text>
+                                </View>
+
+                                {govtDetails.vacancies && govtDetails.vacancies.length > 0 && (
+                                    <View style={{ marginBottom: 20 }}>
+                                        <Text style={[styles.govtLabel, { color: currentTheme.colors.textMuted, marginBottom: 8 }]}>Vacancy Breakup</Text>
+                                        <View style={{ gap: 8 }}>
+                                            {govtDetails.vacancies.map((v: any, i: number) => (
+                                                <View key={i} style={[styles.govtVacancyItem, { backgroundColor: alpha(currentTheme.colors.text, 0.02) }]}>
+                                                    <Text style={[styles.govtVacancyPost, { color: currentTheme.colors.text }]}>{v.postName}</Text>
+                                                    <Text style={[styles.govtVacancyCount, { color: currentTheme.colors.primary }]}>{v.total} Posts</Text>
+                                                </View>
+                                            ))}
+                                        </View>
+                                    </View>
+                                )}
+
+                                {govtDetails.examDates && (
+                                    <View style={{ marginBottom: 20 }}>
+                                        <Text style={[styles.govtLabel, { color: currentTheme.colors.textMuted, marginBottom: 8 }]}>Exam Schedule</Text>
+                                        <View style={{ gap: 8 }}>
+                                            {Object.entries(govtDetails.examDates).filter(([, v]) => !!v).map(([k, v], i) => (
+                                                <View key={i} style={styles.govtExamRow}>
+                                                    <Text style={[styles.govtExamLabel, { color: currentTheme.colors.textMuted }]}>
+                                                        {k.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')}
+                                                    </Text>
+                                                    <Text style={[styles.govtExamValue, { color: currentTheme.colors.text }]}>{v as React.ReactNode}</Text>
+                                                </View>
+                                            ))}
+                                        </View>
+                                    </View>
+                                )}
+
+                                {govtDetails.officialNotificationUrl && (
+                                    <TouchableOpacity
+                                        style={[styles.govtLink, { borderColor: alpha(currentTheme.colors.primary, 0.3) }]}
+                                        onPress={() => openExternalURL(govtDetails.officialNotificationUrl!, currentTheme.colors)}
+                                    >
+                                        <Text style={[styles.govtLinkText, { color: currentTheme.colors.primary }]}>Read Official Notification</Text>
+                                        <ExternalLink size={14} color={currentTheme.colors.primary} />
+                                    </TouchableOpacity>
+                                )}
+                            </SurfaceCard>
+                        </Section>
+                    </Animated.View>
+                );
+            })()}
+
+            {opportunity.description && (
+                <Animated.View style={{ opacity: fadeAnim3, transform: [{ translateY: fadeAnim3.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <Section title="Job Description">
+                        <SurfaceCard style={styles.descCard}>
+                            {renderFormattedDescription(opportunity.description, { theme: currentTheme })}
+                        </SurfaceCard>
+                    </Section>
+                </Animated.View>
+            )}
+
+
+            {similarOpportunities.length > 0 && (
+                <Animated.View style={{ opacity: fadeAnim5, transform: [{ translateY: fadeAnim5.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                    <Section title="Discover More Like This">
+                        <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={styles.similarList}
+                        >
+                            {similarOpportunities.map((item) => (
+                                <TouchableOpacity
+                                    key={item.id}
+                                    style={[styles.similarCard, { backgroundColor: alpha(currentTheme.colors.text, 0.02), borderColor: alpha(currentTheme.colors.border, 0.1) }]}
+                                    onPress={() => {
+                                        navigation.push('JobDetail', { opportunity: item, opportunityId: item.id });
+                                    }}
+                                >
+                                    <CompanyLogo
+                                        name={item.company}
+                                        website={item.companyWebsite}
+                                        applyLink={item.applyLink}
+                                        logoUrl={item.companyLogoUrl}
+                                        size={32}
+                                    />
+                                    <View style={styles.similarText}>
+                                        <Text style={[styles.similarTitle, { color: currentTheme.colors.text }]} numberOfLines={1}>{item.title}</Text>
+                                        <Text style={[styles.similarCompany, { color: currentTheme.colors.textMuted }]} numberOfLines={1}>{item.company}</Text>
+                                    </View>
+                                </TouchableOpacity>
+                            ))}
+                        </ScrollView>
+                    </Section>
+                </Animated.View>
+            )}
+
+            <CommentSection opportunityId={opportunity.id} />
+
+            <Animated.View style={{ opacity: fadeAnim6, transform: [{ translateY: fadeAnim6.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }}>
+                <Section title="Stay Updated">
+                    <SurfaceCard style={styles.notifyCard}>
+                        <View style={styles.notifyContent}>
+                            <View style={styles.notifyText}>
+                                <Text style={[styles.notifyTitle, { color: currentTheme.colors.text }]}>Alert me for similar roles</Text>
+                                <Text style={[styles.notifyDesc, { color: currentTheme.colors.textMuted }]}>Get instant pings when roles at {opportunity.company} or similar match your profile.</Text>
+                            </View>
+                            <TouchableOpacity
+                                style={[
+                                    styles.notifyBtn,
+                                    {
+                                        backgroundColor: isFollowingCompany
+                                            ? currentTheme.colors.primary
+                                            : alpha(currentTheme.colors.primary, 0.1)
+                                    }
+                                ]}
+                                onPress={async () => {
+                                    if (isAnonymous) {
+                                        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                                        showToast('Please sign in to follow companies and get alerts', 'info');
+                                        navigation.navigate('Auth');
+                                        return;
+                                    }
+                                    const companyKey = opportunity.companyWebsite || opportunity.company;
+                                    try {
+                                        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                                        if (isFollowingCompany) {
+                                            const success = await unfollow('COMPANY', companyKey);
+                                            if (success) {
+                                                await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                                showToast(`Alerts disabled for ${opportunity.company}`, 'success');
+                                            } else {
+                                                showToast('Failed to disable alerts', 'error');
+                                            }
+                                        } else {
+                                            const success = await follow('COMPANY', companyKey);
+                                            if (success) {
+                                                await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                                showToast(`Alerts enabled for ${opportunity.company}!`, 'success');
+                                            } else {
+                                                showToast('Failed to enable alerts', 'error');
+                                            }
+                                        }
+                                    } catch (err) {
+                                        if (__DEV__) { console.error('Failed to toggle company follow:', err) }
+                                        showToast('Failed to toggle company alerts', 'error');
+                                    }
+                                }}
+                            >
+                                <Bell
+                                    size={18}
+                                    color={isFollowingCompany ? currentTheme.colors.background : currentTheme.colors.primary}
+                                    fill={isFollowingCompany ? currentTheme.colors.background : 'none'}
+                                />
+                            </TouchableOpacity>
+                        </View>
+                    </SurfaceCard>
+                </Section>
+            </Animated.View>
+        </View>
+      </Animated.ScrollView>
+
+      {/* Floating Action FAB */}
+      {opportunity.applyLink && opportunity.applyLink.trim().length > 0 && (
+        <Animated.View
+            style={[
+                styles.fabContainer,
+                {
+                    bottom: insets.bottom + 20,
+                    width: fabAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [56, expiryInfo?.type === 'EXPIRED' ? 208 : 168]
+                    }),
+                    opacity: expiryInfo?.type === 'EXPIRED' ? 0.8 : 1
+                }
+            ]}
+        >
+            <TouchableOpacity
+                activeOpacity={0.9}
+                style={[
+                    styles.applyFab, 
+                    { backgroundColor: expiryInfo?.type === 'EXPIRED' ? currentTheme.colors.textMuted : currentTheme.colors.primary }
+                ]}
+                onPress={async () => {
+                    const success = await handleApply();
+                    if (success) {
+                        // Trigger active application tracker confirmation prompt
+                        setTimeout(() => {
+                            applyPromptSheetRef.current?.present();
+                        }, 1200);
+
+                        // Prompt for review after successful application flow
+                        if (await StoreReview.hasAction()) {
+                            void StoreReview.requestReview();
+                        }
+                    }
+                }}
+            >
+                <Animated.View style={{
+                    position: 'absolute',
+                    left: 0,
+                    right: 38,
+                    height: 56,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    opacity: fabAnim,
+                }}>
+                    <Text style={[styles.applyFabText, { color: currentTheme.colors.background }]} numberOfLines={1}>
+                        {expiryInfo?.type === 'EXPIRED' ? 'Opportunity Expired' : 'Apply Now'}
+                    </Text>
+                </Animated.View>
+                <View style={styles.fabIconWrapper}>
+                    <ExternalLink size={20} color={currentTheme.colors.background} />
+                </View>
+            </TouchableOpacity>
+        </Animated.View>
+      )}
+
+      <ReportActionSheet
+          ref={reportSheetRef}
+          onReport={async (label) => {
+              // Map UI labels to API FeedbackReason
+              const labelMap: Record<string, FeedbackReason> = {
+                'Expired / Closed Opportunity': FeedbackReason.EXPIRED,
+                'Inaccurate Information': FeedbackReason.INACCURATE,
+                'Broken or Suspicious Link': FeedbackReason.LINK_BROKEN,
+                'Spam or Scam Post': FeedbackReason.SPAM,
+                'Duplicate Entry': FeedbackReason.DUPLICATE,
+              };
+
+              const reason = labelMap[label] || FeedbackReason.OTHER;
+              const success = await reportToApi(reason);
+              
+              if (success) {
+                void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                showSuccess('Opportunity reported. Thank you for helping the community!');
+              }
+          }}
+      />
+
+      <TrackerStatusSheet
+          ref={trackerSheetRef}
+          opportunity={opportunity}
+          currentStatus={getStatus(opportunity.id)}
+          onSelect={handleStatusSelect}
+      />
+
+      <ApplyTrackerPromptSheet
+          ref={applyPromptSheetRef}
+          opportunity={opportunity}
+          onSelectStatus={handlePromptStatusSelect}
+          onViewTracker={() => {
+              navigation.navigate('ApplicationTracker' as never);
+          }}
+      />
+
+
+
+      <PremiumActionSheet visible={menuVisible} onClose={() => setMenuVisible(false)}>
+        <View style={styles.menuContainer}>
+          <TouchableOpacity
+            style={styles.menuItem}
+            onPress={() => {
+              setMenuVisible(false);
+              setTimeout(() => {
+                openTrackerSheet();
+              }, 250);
+            }}
+          >
+            <LayoutDashboard size={mScale(20)} color={isTracking(opportunity.id) ? currentTheme.colors.success : currentTheme.colors.text} />
+            <Text style={[styles.menuItemText, { color: currentTheme.colors.text }]}>
+              {isTracking(opportunity.id) ? 'Track Application Status' : 'Add to Job Tracker'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.menuItem, { borderTopWidth: 1, borderTopColor: alpha(currentTheme.colors.border, 0.05) }]}
+            onPress={() => {
+              setMenuVisible(false);
+              setTimeout(() => {
+                handleToggleSave();
+              }, 250);
+            }}
+          >
+            <Bookmark size={mScale(20)} color={isSaved(opportunity.id) ? currentTheme.colors.primary : currentTheme.colors.text} fill={isSaved(opportunity.id) ? currentTheme.colors.primary : 'transparent'} />
+            <Text style={[styles.menuItemText, { color: currentTheme.colors.text }]}>
+              {isSaved(opportunity.id) ? 'Remove from Saves' : 'Save Opportunity'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.menuItem, { borderTopWidth: 1, borderTopColor: alpha(currentTheme.colors.border, 0.05) }]}
+            onPress={() => {
+              setMenuVisible(false);
+              setTimeout(() => {
+                handleOpenShare();
+              }, 250);
+            }}
+          >
+            <Share2 size={mScale(20)} color={currentTheme.colors.text} />
+            <Text style={[styles.menuItemText, { color: currentTheme.colors.text }]}>
+              Share Opportunity
+            </Text>
+          </TouchableOpacity>
+ 
+          <TouchableOpacity
+            style={[styles.menuItem, { borderTopWidth: 1, borderTopColor: alpha(currentTheme.colors.border, 0.05) }]}
+            onPress={() => {
+              setMenuVisible(false);
+              setTimeout(() => {
+                handleReport();
+              }, 250);
+            }}
+          >
+            <Flag size={mScale(20)} color={currentTheme.colors.error} />
+            <Text style={[styles.menuItemText, { color: currentTheme.colors.error }]}>
+              Report Job Listing
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </PremiumActionSheet>
+    </Screen>
+  );
+});
+
+const styles = StyleSheet.create({
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+    controlBtn: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    scrollContent: {
+        paddingBottom: 150,
+        paddingTop: Platform.OS === 'ios' ? 100 : 80,
+    },
+    iconBtn: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    container: {
+        paddingHorizontal: 20,
+    },
+    backBtn: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginLeft: -10,
+    },
+    hero: {
+        marginBottom: 32,
+        marginTop: 12,
+        paddingTop: 20,
+    },
+    heroGradient: {
+        position: 'absolute',
+        top: -100,
+        left: -20,
+        right: -20,
+        height: 400,
+        zIndex: -1,
+    },
+    badgeRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    typeBadge: {
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 8,
+    },
+    typeText: {
+        fontSize: 11,
+        fontWeight: '500',
+        letterSpacing: 0.5,
+    },
+    verifiedBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 8,
+    },
+    titleRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: 16,
+    },
+    title: {
+        fontSize: 34,
+        fontWeight: '900',
+        letterSpacing: -0.5,
+        lineHeight: 40,
+    },
+    matchIndicator: {
+        width: mScale(52),
+        height: mScale(52),
+        borderRadius: 26,
+        borderWidth: 1.5,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginTop: 4,
+    },
+    matchScore: {
+        fontSize: mScale(16),
+        fontWeight: '900',
+    },
+    matchLabel: {
+        fontSize: mScale(9),
+        fontWeight: '800',
+        marginTop: -2,
+    },
+    matchReasonText: {
+        fontSize: mScale(12),
+        fontWeight: '700',
+        marginTop: 8,
+        letterSpacing: 0.3,
+    },
+    companyArea: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 16,
+        flex: 1,
+    },
+    companyAreaContainer: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        marginTop: 20,
+    },
+    followButton: {
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 10,
+    },
+    followButtonText: {
+        fontSize: 10,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+    },
+    companyName: {
+        fontSize: mScale(18),
+        fontWeight: '600',
+    },
+    momentumBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: SPACING.md,
+        paddingHorizontal: SPACING.md,
+        marginBottom: SPACING.xl,
+    },
+    momentumItem: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: SPACING.sm,
+    },
+    momentumText: {
+        ...TYPOGRAPHY.label,
+        color: 'inherit', // Fallback for color management
+    },
+    momentumDivider: {
+        width: 1,
+        height: 16,
+        opacity: 0.1,
+    },
+    detailCard: {
+        borderRadius: 16,
+        padding: 4,
+        marginBottom: 24,
+    },
+    detailItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: 16,
+        gap: 16,
+    },
+    detailItemHalf: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: 16,
+        gap: 12,
+    },
+    detailRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    detailContent: {
+        flex: 1,
+    },
+    detailLabel: {
+        ...TYPOGRAPHY.label,
+        marginBottom: 2,
+    },
+    detailValue: {
+        ...TYPOGRAPHY.value,
+        lineHeight: 18,
+    },
+    detailDivider: {
+        height: 1,
+        width: '100%',
+        opacity: 0.05,
+    },
+    detailDividerVertical: {
+        width: 1,
+        height: '60%',
+        opacity: 0.1,
+    },
+    descCard: {
+        padding: 20,
+    },
+    description: {
+        fontSize: 16,
+        lineHeight: 24,
+        fontWeight: '500',
+    },
+    trustCard: {
+        padding: 20,
+    },
+    trustRow: {
+        flexDirection: 'row',
+        gap: 16,
+    },
+    trustTitle: {
+        fontSize: 15,
+        fontWeight: '800',
+    },
+    trustDesc: {
+        fontSize: 12,
+        fontWeight: '500',
+        marginTop: 2,
+    },
+    fabContainer: {
+        position: 'absolute',
+        right: 20,
+        alignItems: 'flex-end',
+        zIndex: 1000,
+    },
+    applyFab: {
+        height: 56,
+        borderRadius: 28,
+        width: '100%',
+    },
+    applyFabText: {
+        fontSize: 16,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+    },
+    fabIconWrapper: {
+        position: 'absolute',
+        right: 18,
+        top: 18,
+    },
+    similarList: {
+        gap: 12,
+        paddingRight: 40,
+    },
+    similarCard: {
+        width: 220,
+        padding: 16,
+        borderRadius: 20,
+        borderWidth: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    similarText: {
+        flex: 1,
+    },
+    similarTitle: {
+        fontSize: 13,
+        fontWeight: '800',
+    },
+    similarCompany: {
+        fontSize: 11,
+        fontWeight: '600',
+        marginTop: 2,
+    },
+    notifyCard: {
+        padding: 20,
+        borderRadius: 16,
+    },
+    notifyContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 16,
+    },
+    notifyText: {
+        flex: 1,
+    },
+    notifyTitle: {
+        fontSize: 15,
+        fontWeight: '800',
+    },
+    notifyDesc: {
+        fontSize: 12,
+        fontWeight: '500',
+        marginTop: 4,
+        lineHeight: 18,
+    },
+    notifyBtn: {
+        width: 44,
+        height: 44,
+        borderRadius: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    requirementCard: {
+        padding: 24,
+        borderRadius: 16,
+    },
+    reqRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 16,
+    },
+    reqIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    reqLabel: {
+        ...TYPOGRAPHY.label,
+        marginBottom: 2,
+    },
+    reqValue: {
+        ...TYPOGRAPHY.value,
+    },
+    skillSection: {
+        marginTop: 20,
+        paddingTop: 20,
+    },
+    tagCloud: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    skillTag: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 10,
+        borderWidth: 1,
+    },
+    skillTagText: {
+        fontSize: 11,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+    },
+    walkInCard: {
+        padding: 24,
+        borderRadius: 16,
+        borderWidth: 1.5,
+    },
+    walkInHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 16,
+        marginBottom: 16,
+    },
+    walkInIcon: {
+        width: 44,
+        height: 44,
+        borderRadius: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    walkInTitle: {
+        fontSize: 16,
+        fontWeight: '800',
+    },
+    walkInSub: {
+        fontSize: 12,
+        fontWeight: '600',
+        marginTop: 2,
+    },
+    venueText: {
+        fontSize: 14,
+        lineHeight: 20,
+        fontWeight: '500',
+    },
+    venueDates: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 6,
+        marginTop: 16,
+    },
+    dateChip: {
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 8,
+    },
+    dateText: {
+        fontSize: 11,
+        fontWeight: '700',
+    },
+
+    govtCard: {
+        padding: 24,
+        borderRadius: 16,
+    },
+    govtHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        marginBottom: 20,
+    },
+    govtTitle: {
+        fontSize: 18,
+        fontWeight: '800',
+    },
+    govtInfoRow: {
+        flexDirection: 'row',
+        gap: 24,
+        marginBottom: 20,
+    },
+    govtInfoItem: {
+        flex: 1,
+    },
+    govtLabel: {
+        ...TYPOGRAPHY.label,
+        marginBottom: 4,
+    },
+    govtValue: {
+        ...TYPOGRAPHY.value,
+    },
+    govtFeeBox: {
+        padding: 16,
+        borderRadius: 16,
+        marginBottom: 20,
+    },
+    govtVacancyItem: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: 12,
+        borderRadius: 12,
+    },
+    govtVacancyPost: {
+        fontSize: 13,
+        fontWeight: '700',
+        flex: 1,
+        marginRight: 8,
+    },
+    govtVacancyCount: {
+        fontSize: 12,
+        fontWeight: '800',
+    },
+    govtExamRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingVertical: 4,
+    },
+    govtExamLabel: {
+        fontSize: 12,
+        fontWeight: '700',
+    },
+    govtExamValue: {
+        fontSize: 12,
+        fontWeight: '700',
+    },
+    govtLink: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10,
+        paddingVertical: 14,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderStyle: 'dashed',
+    },
+    govtLinkText: {
+        fontSize: 12,
+        fontWeight: '800',
+        letterSpacing: 0.5,
+    },
+    perksBox: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        padding: 16,
+        borderRadius: 16,
+        borderWidth: 1,
+        marginBottom: 24,
+    },
+    perksText: {
+        fontSize: 13,
+        fontWeight: '400',
+        letterSpacing: 0.2,
+        flex: 1,
+    },
+    timelineCard: {
+        padding: 24,
+        borderRadius: 16,
+    },
+    timelineItem: {
+        flexDirection: 'row',
+        gap: 16,
+        paddingBottom: 20,
+    },
+    timelineMarker: {
+        alignItems: 'center',
+        width: 12,
+    },
+    timelineDot: {
+        width: 12,
+        height: 12,
+        borderRadius: 6,
+        zIndex: 2,
+    },
+    timelineLine: {
+        width: 2,
+        flex: 1,
+        marginTop: 4,
+    },
+    timelineContent: {
+        flex: 1,
+        marginTop: -2,
+    },
+    timelineTitle: {
+        fontSize: 14,
+        fontWeight: '800',
+        marginBottom: 4,
+    },
+    timelineDate: {
+        fontSize: 12,
+        fontWeight: '600',
+        marginBottom: 8,
+    },
+    timelineNotes: {
+        fontSize: 13,
+        lineHeight: 18,
+        fontWeight: '500',
+    },
+    selectionCard: {
+        padding: 24,
+        borderRadius: 16,
+    },
+    selectionText: {
+        fontSize: 14,
+        lineHeight: 22,
+        fontWeight: '400',
+    },
+    staticControls: {
+        position: 'absolute',
+        left: 20,
+        right: 20,
+        zIndex: 200,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    stickyHeader: {
+        zIndex: 300,
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+    },
+    statusBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 12,
+        marginBottom: 16,
+        borderWidth: 1,
+    },
+    statusBannerText: {
+        fontSize: 12,
+        fontWeight: '800',
+        letterSpacing: 0.3,
+    },
+    expiryBadge: {
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 8,
+    },
+    expiryBadgeText: {
+        fontSize: 9,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+    },
+    menuContainer: {
+        paddingVertical: 8,
+    },
+    menuItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 16,
+        paddingHorizontal: 8,
+        gap: 12,
+    },
+    menuItemText: {
+        fontSize: 16,
+        fontWeight: '600',
+    },
+    shareSheetContent: {
+        flex: 1,
+        paddingHorizontal: 24,
+        paddingTop: 8,
+    },
+    shareSheetTitle: {
+        fontSize: 20,
+        fontWeight: '900',
+        letterSpacing: -0.5,
+    },
+    shareSheetSubtitle: {
+        fontSize: 14,
+        marginTop: 4,
+        opacity: 0.7,
+        marginBottom: 24,
+    },
+    shareGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 4,
+        rowGap: 22,
+    },
+    shareItem: {
+        alignItems: 'center',
+        width: '22%',
+        gap: 6,
+    },
+    shareIconBox: {
+        width: 58,
+        height: 58,
+        borderRadius: 18,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    shareItemLabel: {
+        fontSize: 11,
+        fontWeight: '700',
+        textAlign: 'center',
+        width: '100%',
+    },
+    logoContainer: {
+        width: mScale(80),
+        height: mScale(80),
+        borderRadius: 24,
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.1,
+        shadowRadius: 12,
+        elevation: 3,
+    },
+    venueButton: {
+        marginTop: 12,
+        padding: 12,
+        borderRadius: 12,
+        borderWidth: 1,
+    },
+    directionsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginTop: 8,
+    },
+    directionsText: {
+        fontSize: 12,
+        fontWeight: '800',
+    },
+    checklistCard: {
+        padding: 16,
+        borderRadius: 16,
+        marginTop: 4,
+    },
+    checklistItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+    },
+    checkboxCircle: {
+        width: 18,
+        height: 18,
+        borderRadius: 9,
+        borderWidth: 1.5,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    checklistText: {
+        fontSize: 12,
+        fontWeight: '700',
+        flex: 1,
+    },
+});
+
+export default JobDetailScreen;

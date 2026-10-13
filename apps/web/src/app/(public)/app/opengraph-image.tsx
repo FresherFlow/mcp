@@ -1,0 +1,218 @@
+import { ImageResponse } from 'next/og';
+
+export const dynamic = 'force-static';
+export const size = {
+    width: 1200,
+    height: 630,
+};
+export const contentType = 'image/png';
+
+import { getOgAssetSrc } from '@/lib/utils/ogAssets';
+import { SITE_URL } from '@/lib/utils/runtimeConfig';
+
+export default function DownloadOpenGraphImage() {
+    const siteOrigin = SITE_URL;
+    // Prefer the bytes we ship in public/ so build-time satori renders never
+    // fetch the live domain; the URLs stay as fallbacks.
+    const logoUrl =
+        getOgAssetSrc('logo-white-optimized.png') ??
+        (siteOrigin ? `${siteOrigin}/logo-white-optimized.png` : null);
+    const screenshotUrl =
+        getOgAssetSrc('screenshots/discover.png') ??
+        (siteOrigin ? `${siteOrigin}/screenshots/discover.png` : null);
+
+
+    return new ImageResponse(
+        (
+            <div
+                style={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    flexDirection: 'row',
+                    background: '#020404', // OLED pure black background
+                    color: '#F5F7F8', // Bright text
+                    fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial',
+                    padding: '35px 60px',
+                    boxSizing: 'border-box',
+                }}
+            >
+                {/* Left Column (Copy and Call to Actions) */}
+                <div
+                    style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'space-between',
+                        width: '60%',
+                        height: '100%',
+                    }}
+                >
+                    {/* Brand Header */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                        {logoUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                                src={logoUrl}
+                                alt="FresherFlow logo"
+                                width={40}
+                                height={40}
+                                style={{ display: 'flex', objectFit: 'contain' }}
+                            />
+                        ) : (
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    width: 40,
+                                    height: 40,
+                                    borderRadius: 10,
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    background: 'rgba(255, 255, 255, 0.12)',
+                                    fontSize: 20,
+                                    fontWeight: 900,
+                                }}
+                            >
+                                FF
+                            </div>
+                        )}
+                        <div style={{ display: 'flex', fontSize: 32, fontWeight: 800, letterSpacing: -0.2 }}>
+                            FresherFlow
+                        </div>
+                    </div>
+
+                    {/* Middle Copy */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        <div
+                            style={{
+                                display: 'flex',
+                                fontSize: 16,
+                                fontWeight: 700,
+                                letterSpacing: 1.2,
+                                textTransform: 'uppercase',
+                                color: 'rgba(245, 247, 248, 0.65)',
+                            }}
+                        >
+                            JOBS & INTERNSHIPS FOR FRESHERS
+                        </div>
+
+                        <div
+                            style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                lineHeight: 1.15,
+                                letterSpacing: -1.2,
+                                fontSize: 62,
+                                fontWeight: 900,
+                            }}
+                        >
+                            <span style={{ display: 'flex' }}>Never Miss</span>
+                            <span style={{ display: 'flex', color: '#ffffff' }}>
+                                Off-Campus <span style={{ display: 'flex', marginLeft: 10 }}>Deadlines.</span>
+                            </span>
+                        </div>
+
+                        {/* Bulleted trust points */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 18, color: 'rgba(245, 247, 248, 0.85)' }}>
+                                <span style={{ display: 'flex', width: 6, height: 6, borderRadius: 999, background: '#4ade80' }} />
+                                <span>Current openings, updated</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 18, color: 'rgba(245, 247, 248, 0.85)' }}>
+                                <span style={{ display: 'flex', width: 6, height: 6, borderRadius: 999, background: '#4ade80' }} />
+                                <span>Direct apply links · source included</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Bottom CTA Block */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+                        <div 
+                            style={{ 
+                                display: 'flex', 
+                                fontSize: 16, 
+                                fontWeight: 700, 
+                                background: '#ffffff',
+                                color: '#020404',
+                                padding: '10px 20px',
+                                borderRadius: 8,
+                                letterSpacing: -0.1
+                            }}
+                        >
+                            Get Android App
+                        </div>
+                        <div style={{ display: 'flex', fontSize: 16, fontWeight: 700, color: 'rgba(245, 247, 248, 0.4)' }}>
+                            {new URL(SITE_URL).hostname}/app
+                        </div>
+                    </div>
+                </div>
+
+                {/* Right Column (Phone Mockup) */}
+                <div
+                    style={{
+                        display: 'flex',
+                        width: '40%',
+                        height: '100%',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                    }}
+                >
+                    <div
+                        style={{
+                            display: 'flex',
+                            position: 'relative',
+                            width: '270px',
+                            height: '560px',
+                            borderRadius: '32px',
+                            border: '5px solid #1f1f1f',
+                            background: '#000000',
+                            overflow: 'hidden',
+                            boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
+                        }}
+                    >
+                        {/* Screenshot image */}
+                        {screenshotUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                                src={screenshotUrl}
+                                alt="App Screenshot"
+                                width={270}
+                                height={560}
+                                style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    objectFit: 'fill',
+                                }}
+                            />
+                        ) : null}
+
+                        {/* Camera/Speaker Notch Overlay */}
+                        <div
+                            style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: '50%',
+                                transform: 'translateX(-50%)',
+                                width: '80px',
+                                height: '18px',
+                                background: '#1f1f1f',
+                                borderBottomLeftRadius: '10px',
+                                borderBottomRightRadius: '10px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                            }}
+                        >
+                            <div style={{ width: '30px', height: '2px', background: '#333333', borderRadius: '999px' }} />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        ),
+        {
+            ...size,
+            headers: {
+                'Cache-Control': 'public, immutable, max-age=31536000',
+            },
+        }
+    );
+}

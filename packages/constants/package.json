@@ -1,0 +1,29 @@
+{
+  "name": "@fresherflow/constants",
+  "version": "1.0.0",
+  "description": "Shared constants for Job Platform",
+  "type": "module",
+  "main": "./dist/index.js",
+  "react-native": "./src/index.ts",
+  "source": "./src/index.ts",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "constants"
+  ],
+  "dependencies": {
+    "@fresherflow/types": "^1.0.0",
+    "country-state-city": "^3.2.1"
+  },
+  "devDependencies": {
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.66.0"
+  }
+}

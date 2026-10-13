@@ -1,0 +1,142 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { OpportunityStatus, EducationLevel, WorkMode, SalaryPeriod } from '@fresherflow/types';
+import type {
+    GovernmentApplicationFee,
+    GovernmentEligibilityDetails,
+    GovernmentExamDates,
+    GovernmentRequiredDocument,
+    GovernmentVacancy,
+} from '@fresherflow/types';
+
+export interface AdminOpportunityRequest {
+    startDate?: string;
+    endDate?: string;
+    status?: OpportunityStatus;
+    category?: 'job' | 'internship' | 'walk-in';
+    title: string;
+    company: string;
+    customSlug?: string;           // If provided, used as-is (sanitized) instead of auto-generating
+    companyWebsite?: string;
+    description?: string;
+    allowedDegrees?: EducationLevel[];
+    allowedCourses?: string[];
+    allowedSpecializations?: string[];
+    allowedPassoutYears?: number[];
+    requiredSkills?: string[];
+    locations: string[];
+    workMode?: WorkMode;
+    salaryMin?: number;
+    salaryMax?: number;
+    salaryRange?: string;
+    stipend?: string;
+    salaryPeriod?: SalaryPeriod;
+    incentives?: string;
+    jobFunction?: string;
+    selectionProcess?: string;
+    notesHighlights?: string;
+    experienceMin?: number;
+    experienceMax?: number;
+    employmentTypes?: string;
+    tags?: string[];
+    sourceLink?: string;
+    applyLink?: string;
+    expiresAt?: string;
+    governmentJobDetails?: {
+        department?: string;
+        organization?: string;
+        recruitingBody?: string;
+        officialWebsiteUrl?: string;
+        officialNotificationUrl?: string;
+        advertisementNumber?: string;
+        postName?: string;
+        applicationModes?: string[];
+        vacancyCount?: number;
+        vacancies?: GovernmentVacancy[];
+        applicationFee?: string;
+        applicationFeeDetails?: GovernmentApplicationFee;
+        ageMin?: number;
+        ageMax?: number;
+        ageRelaxation?: string;
+        eligibilityDetails?: GovernmentEligibilityDetails;
+        reservationNotes?: string;
+        importantInstructions?: string;
+        applicationStartDate?: string;
+        applicationEndDate?: string;
+        examDate?: string;
+        examDates?: GovernmentExamDates;
+        admitCardDate?: string;
+        resultDate?: string;
+        selectionStages?: string[];
+        requiredDocuments?: string[];
+        requiredDocumentDetails?: GovernmentRequiredDocument[];
+        seoTags?: string[];
+        examCenters?: string[];
+        examPattern?: any;
+        skillTests?: any;
+        examStages?: any;
+        importantDates?: any;
+        qualificationDetails?: any;
+        physicalStandards?: any;
+        extraMetadata?: any;
+        feeBreakdown?: any;
+        ageRelaxationRules?: any;
+        governmentLevel?: string;
+        vacancyNature?: string;
+        applicationStatus?: string;
+        jobCategory?: string[];
+        govtCategory?: string;
+        applicationMode?: string;
+        notificationPdfUrl?: string;
+        admitCardUrl?: string;
+        resultUrl?: string;
+        answerKeyUrl?: string;
+        syllabusUrl?: string;
+        previousPapersUrl?: string;
+        vacancyBreakdown?: any;
+        categoryVacancies?: any;
+        cadreDetails?: any;
+        postPreferences?: any;
+        serviceBond?: any;
+        reservationDetails?: any;
+        referenceLinks?: any;
+        cutOffMarks?: any;
+        officialSourceVerified?: boolean;
+        sourceLastCheckedAt?: string;
+        extractionConfidence?: number;
+        examName?: string;
+        notificationIssuedDate?: string;
+        basicPay?: number;
+        payLevel?: string;
+        allowances?: string[];
+    } | null;
+    driveDetails?: {
+        date?: string;
+        dates?: string[];
+        dateRange?: string;
+        timeRange?: string;
+        venueAddress?: string;
+        venue?: string;
+        venueLink?: string;
+        /**
+         * Location and logistics. These exist on `DriveDetails` but were absent
+         * from this type, so a drive's city, coordinates, cluster, landmark,
+         * transit info, selection process and expiry could never be submitted
+         * through the admin API. That is why admin-created drives had nothing
+         * for the city pages and map to work with.
+         */
+        latitude?: number | null;
+        longitude?: number | null;
+        clusterName?: string | null;
+        city?: string | null;
+        landmark?: string | null;
+        transitInfo?: string | null;
+        selectionProcess?: string | null;
+        expiryDate?: string | null;
+        reportingTime?: string;
+        startTime?: string;
+        endTime?: string;
+        requiredDocuments?: string[];
+        contactPerson?: string;
+        contactPhone?: string;
+    };
+}

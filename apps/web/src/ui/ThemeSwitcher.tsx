@@ -1,0 +1,125 @@
+"use client"
+
+import * as React from "react"
+import { Moon, Sun, Monitor, Check } from "lucide-react"
+import { useTheme } from "next-themes"
+
+import { ResponsivePopover } from "./ResponsivePopover"
+
+export function ThemeSwitcher({ className = '', children }: { className?: string; children?: React.ReactNode }) {
+  const [mounted, setMounted] = React.useState(false)
+  const { theme, setTheme, resolvedTheme } = useTheme()
+  const [open, setOpen] = React.useState(false)
+  const closeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  React.useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  React.useEffect(() => {
+    return () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current)
+    }
+  }, [])
+
+  const canHover = () =>
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia !== 'undefined' &&
+    window.matchMedia('(hover: hover) and (pointer: fine)').matches
+
+  function scheduleClose() {
+    if (closeTimer.current) clearTimeout(closeTimer.current)
+    closeTimer.current = setTimeout(() => setOpen(false), 250)
+  }
+
+  function cancelClose() {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+  }
+
+  async function handleThemeChange(newTheme: string) {
+    setOpen(false);
+    if (!document.startViewTransition) {
+      setTheme(newTheme);
+      return;
+    }
+
+    document.documentElement.style.viewTransitionName = 'theme-transition';
+    const transition = document.startViewTransition(() => {
+      setTheme(newTheme);
+    });
+    
+    await transition.finished;
+    document.documentElement.style.viewTransitionName = '';
+  }
+
+  if (!mounted) {
+    return <div className={`w-10 h-10 ${className}`} />
+  }
+
+  return (
+    <div
+      className={children ? 'flex w-full' : 'inline-flex'}
+      onMouseEnter={() => {
+        if (canHover()) {
+          cancelClose()
+          setOpen(true)
+        }
+      }}
+      onMouseLeave={() => {
+        if (canHover()) scheduleClose()
+      }}
+    >
+    <ResponsivePopover
+      openPopover={open}
+      setOpenPopover={setOpen}
+      align="end"
+      popoverContentClassName="w-40 p-1 before:absolute before:-top-2 before:inset-x-0 before:h-2 before:content-['']"
+      content={
+        <div
+          className="flex flex-col w-full gap-1 p-1 sm:p-0"
+          onMouseEnter={() => {
+            if (canHover()) {
+              cancelClose()
+              setOpen(true)
+            }
+          }}
+          onMouseLeave={() => {
+            if (canHover()) scheduleClose()
+          }}
+        >
+          <button onClick={() => handleThemeChange("light")} className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm font-medium transition-colors hover:bg-muted text-foreground w-full text-left outline-none">
+            <Sun className="h-4 w-4 opacity-70" />
+            <span className="flex-1">Light</span>
+            {theme === 'light' && <Check className="h-4 w-4" />}
+          </button>
+          <button onClick={() => handleThemeChange("dark")} className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm font-medium transition-colors hover:bg-muted text-foreground w-full text-left outline-none">
+            <Moon className="h-4 w-4 opacity-70" />
+            <span className="flex-1">Dark</span>
+            {theme === 'dark' && <Check className="h-4 w-4" />}
+          </button>
+          <button onClick={() => handleThemeChange("system")} className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm font-medium transition-colors hover:bg-muted text-foreground w-full text-left outline-none">
+            <Monitor className="h-4 w-4 opacity-70" />
+            <span className="flex-1">System</span>
+            {theme === 'system' && <Check className="h-4 w-4" />}
+          </button>
+        </div>
+      }
+    >
+      {children ? children : (
+        <button
+          className={`group relative p-2 text-muted-foreground hover:text-foreground hover:bg-muted/80 rounded-xl transition-colors duration-200 outline-none active:scale-[0.97] ${className}`}
+          aria-label="Toggle Theme"
+        >
+          <div className="relative w-5 h-5 flex items-center justify-center">
+            <Sun className={`absolute transition-all duration-300 ${resolvedTheme === 'dark' ? 'opacity-0 rotate-90 scale-75' : 'opacity-100 rotate-0 scale-100'}`} size={18} />
+            <Moon className={`absolute transition-all duration-300 ${resolvedTheme === 'dark' ? 'opacity-100 rotate-0 scale-100' : 'opacity-0 -rotate-90 scale-75'}`} size={18} />
+          </div>
+        </button>
+      )}
+    </ResponsivePopover>
+    </div>
+  )
+}

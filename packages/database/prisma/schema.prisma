@@ -1,0 +1,2552 @@
+// This is your Prisma schema file
+// FresherFlow platform schema.
+//
+// Covers far more than job postings: opportunities (employment, competitions,
+// scholarships, education, events), drives and campus targeting, government
+// recruiting, community rooms and posts, and recruiter/organisation workspaces.
+//
+// Note: many taxonomies are intentionally String[] rather than enums � tags,
+// skills, locations, jobFunction and similar are open vocabularies that vary by
+// employer and region. Enums are used only where the platform must constrain
+// and index the value.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// ENUMS - Type Safety (No Free-Text Strings)
+// ============================================================================
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum ReservationCategory {
+  GENERAL
+  OBC
+  SC
+  ST
+  EWS
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+// ── Opportunity taxonomy (v2) ────────────────────────────────────────────────
+// Replaces the old mixed-axis `OpportunityType { JOB, INTERNSHIP, WALKIN,
+// GOVERNMENT }`. These are independent dimensions, so adding a new concept
+// (hackathon, off-campus drive, scholarship) never needs a new enum value.
+enum OpportunityCategory {
+  EMPLOYMENT
+  COMPETITION
+  SCHOLARSHIP
+  EDUCATION
+  EVENT
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  TEMPORARY
+  FREELANCE
+  INTERNSHIP
+  APPRENTICESHIP
+  VOLUNTEER
+  PER_DIEM
+  OTHER
+}
+
+// India-specific recruitment taxonomy: which campuses a drive is open to.
+// REGULAR covers ordinary open listings.
+enum RecruitmentMethod {
+  REGULAR
+  ON_CAMPUS
+  OFF_CAMPUS
+  POOL_CAMPUS
+  WALK_IN
+  REFERRAL
+}
+
+enum WorkMode {
+  ONSITE
+  HYBRID
+  REMOTE
+}
+
+enum Sector {
+  PRIVATE
+  GOVERNMENT
+  NGO
+  ACADEMIC
+  STARTUP
+  OTHER
+}
+
+// Seniority band, deliberately separate from experienceMin/experienceMax.
+enum ExperienceLevel {
+  ENTRY_LEVEL
+  INTERN
+  ASSOCIATE
+  MID
+  SENIOR
+  LEAD
+  EXECUTIVE
+}
+
+// How the listing entered the platform. Lets a user tell a community
+// submission from a bot scrape, and drives trust scoring.
+enum OpportunitySourceKind {
+  SCRAPED
+  USER_SUBMITTED
+  IMPORTED
+  PARTNER_FEED
+}
+
+enum OpportunityStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum RoleType {
+  SUPER_ADMIN
+  MODERATOR
+}
+
+enum ActorType {
+  USER
+  SYSTEM
+  WORKER
+  API
+}
+
+enum GovernmentApplicationStatus {
+  UPCOMING
+  OPEN
+  CLOSED
+  EXAM_SCHEDULED
+  ADMIT_CARD_RELEASED
+  ANSWER_KEY_RELEASED
+  RESULT_DECLARED
+  COUNSELLING
+  DOCUMENT_VERIFICATION
+  COMPLETED
+  CANCELLED
+}
+
+// This is a LEVEL, not a domain. CENTRAL / STATE / PSU describe where in the
+// hierarchy the post sits. Domains (BANKING, DEFENCE, JUDICIARY, EDUCATION)
+// belong on GovernmentJobDetails.domain, not mixed in here.
+enum GovernmentLevel {
+  CENTRAL
+  STATE
+  PSU
+  LOCAL
+  OTHER
+}
+
+enum VacancyNature {
+  PERMANENT
+  TEMPORARY
+  CONTRACT
+  APPRENTICESHIP
+  DEPUTATION
+}
+
+enum ActionType {
+  APPLIED
+  PLANNED
+  INTERVIEWED
+  SELECTED
+  VIEWED  // Auto-tracked on job detail view
+  SHARED
+  OA
+  REJECTED
+  REPORTED
+  // Legacy values kept for compatibility with existing rows
+  PLANNING
+  ATTENDED
+  NOT_ELIGIBLE
+}
+
+enum FeedbackReason {
+  EXPIRED // Listing already expired when accessed
+  LINK_BROKEN // Apply link not working
+  DUPLICATE // Duplicate posting detected
+  INACCURATE // Wrong information in listing
+  SPAM // Malicious or irrelevant content
+  OTHER // Any other issue
+}
+
+enum AppFeedbackType {
+  BUG
+  IDEA
+  PRAISE
+  OTHER
+}
+
+enum EducationLevel {
+  TENTH
+  INTER
+  DIPLOMA
+  DEGREE
+  PG
+}
+
+enum SalaryPeriod {
+  MONTHLY
+  YEARLY
+}
+
+enum Availability {
+  IMMEDIATE
+  DAYS_15
+  MONTH_1
+}
+
+enum ProfileVisibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+enum LinkHealth {
+  HEALTHY
+  BROKEN
+  RETRYING
+}
+
+enum GrowthFunnelEvent {
+  DETAIL_VIEW
+  LOGIN_VIEW
+  AUTH_SUCCESS
+  SIGNUP_SUCCESS
+  SAVE_JOB
+  APPLY_CLICK
+  SHARE_JOB
+  SIGNUP_VIEW
+  INSTALL_PROMPT_SHOWN
+  INSTALL_ACCEPTED
+  OPENED_STANDALONE
+  APP_INIT
+}
+
+enum PlatformEventType {
+  VIEW_JOB
+  CLICK_APPLY
+  SHARE_JOB
+  SAVE_JOB
+  REFERRAL_HIT
+  REFERRAL_CLICK
+  APP_INIT
+  AUTH_STEP
+}
+
+enum ReferralBadge {
+  FIRST_INVITE
+  CONNECTOR
+  CAMPUS_SCOUT
+  GROWTH_NODE
+  NETWORK_BUILDER
+}
+
+enum AlertChannel {
+  EMAIL
+  APP
+  PUSH
+}
+
+enum AlertKind {
+  DAILY_DIGEST
+  CLOSING_SOON
+  HIGHLIGHT
+  APP_UPDATE
+  NEW_JOB  // Instant alert when new opportunity is published
+  EVENT_REMINDER
+  CAMPUS_DRIVE       // A drive opened for a college the user follows
+  REGISTRATION_OPEN  // Hackathon / competition / scholarship registration opened
+  REGISTRATION_CLOSING
+  APPLICATION_UPDATE
+}
+
+enum AlertDispatchStatus {
+  INITIATED
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum AlertDispatchReason {
+  DEDUPE_HIT
+  DAILY_CAP
+  PREFERENCE_DISABLED
+  NOT_ELIGIBLE
+  CHANNEL_ERROR
+  ENUM_FALLBACK
+  VALIDATION_ERROR
+  SENT_OK
+}
+
+enum OpportunityEventType {
+  NOTIFICATION
+  REG_START
+  REG_END
+  EXAM_DATE
+  RESULT
+  INTERVIEW
+  DOC_VERIFICATION
+  // Stage updates a candidate actually needs to report or an admin declares.
+  ASSESSMENT_RELEASED
+  SHORTLIST
+  DRIVE_POSTPONED
+  DRIVE_CLOSED
+  REOPENED
+  OTHER
+}
+
+// Who may assert something happened, and how much weight the claim carries.
+enum EventAuthorRole {
+  USER
+  MODERATOR
+  ADMIN
+  SYSTEM
+}
+
+enum EventVerification {
+  UNVERIFIED
+  VERIFIED
+  REJECTED
+}
+
+enum SocialPlatform {
+  X
+  LINKEDIN
+  FACEBOOK
+}
+
+enum SocialPostStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+  DISABLED
+  DRY_RUN
+}
+
+enum UserTrustLevel {
+  NEW
+  VERIFIED
+  CONTRIBUTOR
+  MODERATOR
+  BANNED
+}
+
+enum ResourceItemType {
+  PDF
+  FILE
+  YOUTUBE
+  WEBSITE
+  ROADMAP
+  LINK
+}
+
+enum ResourceItemStatus {
+  PENDING_REVIEW
+  APPROVED
+}
+
+// ============================================================================
+// USER MODELS
+// ============================================================================
+
+model User {
+  id               String         @id @default(uuid())
+  firebase_uid     String?        @unique
+  username         String?        @unique
+  usernameUpdatedAt DateTime?
+  email            String?        @unique
+  fullName         String?
+  role             Role           @default(USER)
+  referralCode     String?        @unique
+  referredByUserId String?
+  referredAt       DateTime?
+  trustScore       Float          @default(0.0)
+  trustLevel       UserTrustLevel @default(NEW)
+   isAnonymous      Boolean        @default(false)
+   anon_id          String?        @unique
+   lastLogin        DateTime?
+   createdAt        DateTime       @default(now())
+   status           UserStatus     @default(ACTIVE)
+
+   // Relations
+   profile            Profile?
+  actions            UserAction[]
+  applications       OpportunityApplication[]
+  sharedIntoRooms    RoomOpportunity[]
+  reportedEvents     OpportunityEvent[] @relation("OpportunityEventAuthor")
+  verifiedEvents     OpportunityEvent[] @relation("OpportunityEventVerifier")
+  feedback           ListingFeedback[]
+  appFeedback        AppFeedback[]
+  savedOpportunities SavedOpportunity[]
+  alertPreference    AlertPreference?
+  alertDeliveries    AlertDelivery[]
+  alertDispatchLogs AlertDispatchLog[]
+  pushSubscription   PushSubscription?
+   platformEvents     PlatformEvent[]
+   ingestionSources   IngestionSource[]
+   referredBy         User?                @relation("UserReferrals", fields: [referredByUserId], references: [id], onDelete: SetNull)
+   referrals          User[]               @relation("UserReferrals")
+   earnedReferralBadges ReferralBadgeGrant[]
+   userRoles          UserAccessRole[]
+
+   // Admin Relations (only for role=ADMIN)
+  postedOpportunities Opportunity[]
+  rawContributions   RawOpportunity[]     @relation("UserRawContributions")
+  auditLogs           AdminAudit[]
+  authenticators      Authenticator[]
+  comments           OpportunityComment[]
+  commentVotes       CommentVote[]
+  jobSignals         JobSignal[]
+  jobSubmissions     JobSubmission[]          @relation("JobSubmissions")
+  reports            Report[]                 @relation("ReportsFiled")
+  resolvedReports    Report[]                 @relation("ReportsResolved")
+  notifications      Notification[]           @relation("NotificationsReceived")
+  sentNotifications  Notification[]           @relation("NotificationsActed")
+  follows            UserFollow[]
+  savedCandidates    SavedCandidate[]     @relation("RecruiterSaved")
+  savedByRecruiters  SavedCandidate[]     @relation("SavedByRecruiter")
+  sentIntroRequests  IntroRequest[]       @relation("IntroRequestsSent")
+  receivedIntroRequests IntroRequest[]    @relation("IntroRequestsReceived")
+  profileViews       ProfileView[]        @relation("ProfileViewed")
+  recruiterViews     ProfileView[]        @relation("RecruiterViews")
+  organizationMemberships OrganizationMembership[]
+  projects           Project[]
+  recruiterInterests CandidateInterest[]  @relation("RecruiterInterests")
+  candidateInterests CandidateInterest[]  @relation("CandidateInterests")
+
+  webAuthnChallenges WebAuthnChallenge[]
+  updatedAdminDeliveryControls AdminDeliveryControl[]
+
+  // Security - TOTP
+  totpSecret         String?
+  isTwoFactorEnabled Boolean  @default(false)
+
+  // Tokens
+  refreshTokens      RefreshToken[]
+
+    deviceTokens       DeviceToken[]
+    communityPosts     CommunityPost[]
+    communityPostComments CommunityPostComment[]
+    communityPostVotes CommunityPostVote[]
+    interviewExperiences InterviewExperience[]
+    interviewExperienceVotes InterviewExperienceVote[]
+    applicationUpdates ApplicationUpdate[]
+    rooms              Room[]
+    roomMembers        RoomMember[]
+    savedSearches      SavedSearch[]
+    referralRequests   ReferralRequest[]  @relation("ReferralRequestAuthor")
+    referralResponses  ReferralResponse[] @relation("ReferralResponseAuthor")
+    salaryReports      SalaryReport[]
+    salaryReportMarks  SalaryReportHelpful[]
+
+   @@index([referredByUserId])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+}
+
+model AdminDeliveryControl {
+  id                           String   @id @default("global")
+  socialAutoPostingEnabled     Boolean  @default(true)
+  userAlertsEnabled            Boolean  @default(true)
+  userEmailNotificationsEnabled Boolean @default(true)
+  updatedByUserId              String?
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+
+  updatedBy User? @relation(fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
+model Authenticator {
+  credentialID         String  @id
+  userId               String
+  publicKey            Bytes
+  counter              Int
+  deviceType           String
+  backedUp             Boolean
+  transports           String? // Stored as comma-separated string
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model WebAuthnChallenge {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  userId    String
+  challenge String
+  type      String   // "reg" or "auth"
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Profile {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  // Education Details (40% weight total)
+  educationLevel EducationLevel?
+
+  // 10th Details
+  tenthYear        Int?
+
+  // 12th / Diploma Details
+  twelfthYear        Int?
+
+  // Graduation Details
+  gradCourse         String?
+  gradSpecialization String?
+  gradYear           Int?
+  collegeId          String?
+  collegeName        String?
+  collegeState       String?
+  // The student's own campus as a real entity. Without this, a saved search can
+  // never join against OpportunityInstitution, so "a drive targets your college"
+  // is not queryable. collegeName/collegeState remain as the display fallback
+  // until a profile has been matched to a known institution.
+  institutionId      String?
+  institution        Institution? @relation("ProfileInstitution", fields: [institutionId], references: [id], onDelete: SetNull)
+
+  // Post Graduation (Optional)
+  pgCourse          String?
+  pgSpecialization  String?
+  pgYear            Int?
+
+  // Opportunity Preferences (40% weight)
+  interestedIn    OpportunityCategory[] @default([EMPLOYMENT])
+  preferredCities String[] // max 5
+  workModes       WorkMode[]
+
+  // Readiness Status (20% weight)
+  availability Availability?
+  skills       String[] // admin-controlled tags
+
+  // Government Job Eligibility Fields
+  dob            DateTime?
+  gender         Gender?
+  category       ReservationCategory?
+  isPwBD         Boolean?             @default(false)
+  isExServicemen Boolean?             @default(false)
+  homeState      String?
+
+  // Recruiter-facing fields (profile pages v1)
+  expectedCtc        Int? // Annual CTC expectation in LPA
+  resumeUrl          String? // Uploaded or linked resume URL
+  willingToRelocate  Boolean @default(true)
+
+  // Derived & Identity Fields
+  headline         String?
+  about            String?
+  githubUrl        String?
+  linkedinUrl      String?
+  portfolioUrl     String?
+  avatarUrl        String?
+  githubPinnedRepos Json?
+  openToRecruiters Boolean   @default(false)
+  profilePublic    Boolean   @default(true)
+  visibility       ProfileVisibility @default(PUBLIC)
+
+  // DERIVED FIELD - Never manually updated, always recalculated
+  completionPercentage Int @default(0)
+
+  profilePublishedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// ADMIN TRACKING (Audit trail for Users with ADMIN role)
+// ============================================================================
+
+model AdminAudit {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String // CREATE, UPDATE, DELETE, EXPIRE
+  targetId  String // Opportunity ID
+  reason    String? // Required for DELETE/EXPIRE
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+   @@index([userId])
+   @@index([action])
+   @@index([createdAt])
+}
+
+// ============================================================================
+// RBAC MODELS
+// ============================================================================
+// IMPORTANT: The legacy 'Role' enum (USER / ADMIN) is for authentication only.
+// All authorization checks use AccessRole + Permission via the database mapping.
+// Do NOT use the 'Role' enum for access control.
+
+model AccessRole {
+    id            String              @id @default(uuid())
+    name          RoleType            @unique
+    displayName   String              @unique
+    description   String?
+    isSystem      Boolean             @default(false)
+    createdAt     DateTime            @default(now())
+    updatedAt     DateTime            @updatedAt
+
+    permissions   AccessRolePermission[]
+    userRoles     UserAccessRole[]
+}
+
+model Permission {
+    id          String              @id @default(uuid())
+    key         String              @unique
+    description String
+    category    String
+    createdAt   DateTime            @default(now())
+
+    roles       AccessRolePermission[]
+}
+
+model AccessRolePermission {
+    roleId      String
+    permissionId String
+
+    role       AccessRole  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+    permission Permission  @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+    @@id([roleId, permissionId])
+    @@index([permissionId])
+}
+
+model UserAccessRole {
+    userId      String
+    roleId      String
+    assignedAt  DateTime     @default(now())
+    assignedBy  String?
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+    role AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+    @@id([userId, roleId])
+    @@index([roleId])
+}
+
+// ============================================================================
+// OPPORTUNITY MODELS
+// ============================================================================
+
+model Opportunity {
+  id   String          @id @default(uuid())
+  slug String          @unique // SEO-friendly URL slug
+
+  // ── Identity ───────────────────────────────────────────────────────────────
+  title       String
+  company     String
+  companyWebsite String?
+  companyLogoUrl String?
+  companyStage    String?
+  companySize     String?
+  companyIndustry String[] @default([])
+  companyTopics   String[] @default([])
+  description String? @db.Text
+
+  // ── Classification (independent dimensions, see enums above) ────────────────
+  category         OpportunityCategory @default(EMPLOYMENT)
+  employmentTypes  EmploymentType[]     @default([]) // array: sources can publish more than one
+  recruitmentMethod RecruitmentMethod?  // null = not drive-based
+  workMode         WorkMode?
+  sector           Sector               @default(PRIVATE)
+  experienceLevel  ExperienceLevel?
+
+  // ── Provenance (community + scrapers share one table) ──────────────────────
+  sourceKind      OpportunitySourceKind @default(SCRAPED)
+  sourceExternalId String? // id in the upstream ATS/feed, for stable dedupe
+  sourceLink      String?  // original listing page; may equal applyLink
+  applyLink       String?
+  firstSeenAt     DateTime @default(now())
+
+  // ── Eligibility Rules (DB-filterable) ─────────────────────────────────────
+  allowedDegrees      EducationLevel[]
+  allowedCourses      String[] // Specific courses like "B.Tech", "MCA", "MBA"
+  allowedSpecializations String[] @default([]) // Specific streams like "Computer Science", "Mechanical"
+  allowedPassoutYears Int[] // Array for specific batches (e.g. 2023, 2025)
+  passoutYearMin      Int?  // Range Optimization
+  passoutYearMax      Int?  // Range Optimization
+  allowedAvailability Availability[] // When candidate should be available
+  requiredSkills      String[]
+
+  // ── Location ───────────────────────────────────────────────────────────────
+  locations           String[] // For DB-level filtering
+  structuredLocations Json?
+  // Where remote applicants may live from, which is NOT the same as work
+  // location (Google JobPosting + Wellfound both separate these).
+  applicantLocationRequirements String[] @default([])
+
+  // ── Experience ─────────────────────────────────────────────────────────────
+  experienceMin       Float?   // Experience in years (e.g. 0, 0.5, 1.5)
+  experienceMax       Float?   // Experience in years (e.g. 3, 5.5)
+
+  // ── Compensation ───────────────────────────────────────────────────────────
+  // SOURCE OF TRUTH RULE: OpportunityCompensation rows are authoritative.
+  // salaryMin/salaryMax/salaryRange/salaryPeriod are a denormalised PROJECTION of
+  // the first SALARY row, written by the same save path, purely so the feed can
+  // filter on salary without a join. If they ever disagree, the component rows
+  // win and these are stale — never the other way round.
+  salaryMin      Int?
+  salaryMax      Int?
+  salaryRange    String? // "6-8 LPA"
+  salaryPeriod   SalaryPeriod @default(YEARLY) // Default to Annual (India standard)
+  stipend        String? // "10k/month" — display only. A STIPEND row in
+                          // OpportunityCompensation is the structured truth.
+  incentives     String? // "Rs. 20k - 1L targets" — display only, same rule.
+
+  // ── Application ────────────────────────────────────────────────────────────
+  jobFunction    String? // "Banking", "Sales", "Engineering"
+  selectionProcess String? @db.Text // "Aptitude > Technical > HR"
+  notesHighlights  String? @db.Text // bond, training, special conditions
+  applicationStartDate   DateTime?
+  applicationDeadline    DateTime? // drives + competitions close on this
+  applicationDetails Json?
+  tags           String[] @default([])
+
+  // ── Time-bounded events (competitions, hackathons, workshops) ──────────────
+  // Only populated for category != EMPLOYMENT, or a dated drive.
+  startsAt       DateTime?
+  endsAt         DateTime?
+  registrationDeadline DateTime?
+
+  // ── Kind-specific details ──────────────────────────────────────────────────
+  // Only ever add a relation here when the data needs real SQL filtering or
+  // joins. Everything else belongs in `attributes`.
+  driveDetails        DriveDetails?
+  eventDetails        EventDetails?
+  governmentJobDetails GovernmentJobDetails?
+
+  // Long tail for a kind, no migration required to add a new kind.
+  attributes Json?
+
+  // ── Trust ──────────────────────────────────────────────────────────────────
+  // FresherFlow is a community: members submit listings too, not just bots. A
+  // visible, sortable trust score lets a user tell a community submission from
+  // a scrape, and lets ranking prefer verified sources as volume grows.
+  // Starts neutral at 50 (unknown), not at 0 (untrustworthy).
+  trustScore        Float   @default(50)
+  // Deliberately NOT UserTrustLevel: BANNED/CONTRIBUTOR/MODERATOR describe a
+  // person. A listing has its own verification state.
+  trustLevel        OpportunityTrustLevel @default(UNVERIFIED)
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+
+  // ── Expiry Management ──────────────────────────────────────────────────────
+  expiresAt DateTime?
+  expiredAt DateTime?
+
+  /// Earliest still-future date from DriveDetails.dates, mirrored on the
+  /// opportunity so drives can be filtered by time in SQL.
+  ///
+  /// DriveDetails.dates is an unsized DateTime[] scalar list. Postgres cannot
+  /// use an index for range containment on a bare array, so "drives in the next
+  /// 7 days" and "drives near me" had to load every walk-in row into Node and
+  /// filter in JS. This column makes both a plain indexed comparison.
+  ///
+  /// Maintained by DriveDetails write paths and expiryCron. Null for anything
+  /// without DriveDetails, and null once every date has passed.
+  nextDriveAt DateTime?
+
+  /// DriveDetails.city mirrored for the same reason as nextDriveAt: `city` lives
+  /// on DriveDetails, and joining through a 1:1 relation to filter a list is
+  /// slower than an indexed column on the row being listed. Null unless a
+  /// drive. Written by the same paths that maintain nextDriveAt.
+  driveCity String?
+
+  status    OpportunityStatus @default(DRAFT) // Starts as draft
+
+  // ── Soft Delete Support (PRODUCTION MUST-HAVE) ─────────────────────────────
+  deletedAt      DateTime? // Null = not deleted, set = soft deleted
+  deletionReason String? // Why was it removed (audit trail)
+
+  // ── Authorship ─────────────────────────────────────────────────────────────
+  // Optional: bot-scraped listings have no human author. Community
+  // submissions do, and `sourceKind` distinguishes the two.
+  postedByUserId String?
+  user           User?   @relation(fields: [postedByUserId], references: [id])
+  postedAt        DateTime @default(now())
+  publishedAt     DateTime?
+  updatedAt       DateTime @default(now()) @updatedAt
+
+
+  // Health Tracking (Verification Bot)
+  linkHealth           LinkHealth @default(HEALTHY)
+  verificationFailures Int        @default(0)
+  lastVerifiedAt       DateTime   @default(now())
+  lastVerified         DateTime   @default(now())
+
+  // Engagement Counters (Denormalized for performance)
+  sharesCount          Int        @default(0)
+  savesCount           Int        @default(0)
+  clicksCount          Int        @default(0)
+  commentsCount        Int        @default(0)
+  trendingScore        Float      @default(0.0)
+
+  // Relations
+  actions  UserAction[]
+  feedback ListingFeedback[]
+  savedBy  SavedOpportunity[]
+  alertDeliveries AlertDelivery[]
+  alertDispatchLogs AlertDispatchLog[]
+  telegramBroadcasts TelegramBroadcast[]
+  rawIngestions RawOpportunity[]
+  events OpportunityEvent[]
+  platformEvents PlatformEvent[]
+  socialPosts SocialPost[]
+  comments    OpportunityComment[]
+  jobSignals  JobSignal[]
+  submissions JobSubmission[]
+   reports     Report[]
+   notifications Notification[]
+  // The organisation that owns this listing. A recruiter, a college placement
+  // cell or a training institute posts through its Organization account, so it
+  // can manage and edit what it posted. Null for scraped rows whose employer has
+  // not been matched to an Organization yet — `company` stays as the display
+  // value in that case. (This replaces an old `companyId` string that pointed at
+  // nothing, because no Company model existed.)
+  organizationId String?
+  organization   Organization? @relation("OrganizationOpportunities", fields: [organizationId], references: [id], onDelete: SetNull)
+   interviewExperiences InterviewExperience[]
+   applicationUpdates ApplicationUpdate[]
+   salaryReports  SalaryReport[]
+   institutions  OpportunityInstitution[]
+   applications  OpportunityApplication[]
+   compensations OpportunityCompensation[]
+   roomListings  RoomOpportunity[]
+  // The hiring process this listing follows. Null means "use the platform
+  // default template" — the normal case for scraped listings.
+  pipelineId    String?
+  pipeline      HiringPipeline? @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
+
+   // Performance Search optimization
+  search_vector  Unsupported("tsvector")? @default(dbgenerated("''::tsvector"))
+
+  // DB-level filtering indexes
+  @@index([organizationId])
+  @@index([status, deletedAt, category, postedAt(desc)])
+  @@index([status, postedAt(desc)])
+  @@index([category, sector, status])
+@@index([recruitmentMethod, status])
+// Drive discovery: "walk-ins in city X in the next N days", status-scoped so the
+// public feed filter stays a single index scan.
+@@index([status, nextDriveAt])
+// Drive discovery: proximity search. City leads with a date window because
+// radius search without a date bound returns every expired drive first.
+@@index([driveCity, nextDriveAt])
+@@index([workMode, status])
+  @@index([experienceLevel, status])
+  @@index([sourceKind, postedAt(desc)])
+  @@index([trustScore(desc), status])
+  @@index([sourceExternalId])
+  @@index([applicationDeadline])
+  @@index([registrationDeadline])
+  @@index([trendingScore(desc)])
+  @@index([sharesCount(desc)])
+  @@index([search_vector], type: Gin)
+  @@index([allowedPassoutYears], type: Gin)
+  @@index([allowedDegrees], type: Gin)
+  @@index([allowedCourses], type: Gin)
+  @@index([allowedSpecializations], type: Gin)
+  @@index([locations], type: Gin)
+  @@index([applicantLocationRequirements], type: Gin)
+  @@index([requiredSkills], type: Gin)
+  @@index([employmentTypes], type: Gin)
+  @@index([tags], type: Gin)
+  @@index([salaryMin, salaryMax])
+  @@index([companyIndustry], type: Gin)
+  @@index([companyTopics], type: Gin)
+  @@index([company])
+  @@index([title]) // Maps to 'role' in queries
+  @@index([slug])
+  @@index([sourceLink])
+  @@index([expiresAt]) // Performance for expiry cron
+  @@index([deletedAt]) // Exclude soft-deleted in queries
+  @@index([linkHealth]) // Focus for verification bot
+  @@index([lastVerifiedAt]) // Sort by oldest verification
+}
+
+
+// Compensation components. Ashby exposes salary + equity + bonus and Wellfound
+// salary + equity, so a single min/max pair cannot represent a real offer.
+//
+// Opportunity.salaryMin/salaryMax/salaryPeriod stay as the fast, indexed path
+// because salary is what users actually filter on. This table is the full
+// picture: equity, bonus, commission, per-diem, and split offers. Anything a
+// new kind invents still goes in `attributes` — this is only for the parts
+// worth querying and comparing.
+enum CompensationType {
+  SALARY
+  STIPEND
+  EQUITY
+  BONUS
+  COMMISSION
+  PER_DIEM
+  REIMBURSEMENT
+  OTHER
+}
+
+enum EquityUnit {
+  ESOP
+  RSU
+  OPTIONS
+  SHARES
+  PHANTOM
+  OTHER
+}
+
+model OpportunityCompensation {
+  id            String           @id @default(uuid())
+  opportunityId String
+  type          CompensationType
+  minAmount     Int?             // cash amounts, in the row's currency
+  maxAmount     Int?
+  currency      String           @default("INR")
+  // null for equity, which has no monthly/yearly period
+  period        SalaryPeriod?
+  equityMin     Float?           // option/RSU counts
+  equityMax     Float?
+  equityUnit    EquityUnit?
+  note          String?          // "0.5% of current valuation", "joining bonus"
+  isNegotiable  Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([opportunityId, type])
+  @@index([type, maxAmount])
+  @@index([equityUnit])
+}
+
+// A dated, venue-based recruitment drive. Shared by every drive-style
+// RecruitmentMethod (WALK_IN, ON_CAMPUS, OFF_CAMPUS, POOL_CAMPUS) so we do not
+// need one detail table per method. Replaces the old WalkInDetails.
+model DriveDetails {
+  id            String @id @default(uuid())
+  opportunityId String @unique
+
+  dates             DateTime[] // Multiple drive dates
+  dateRange         String?    // e.g. "24th Aug - 28th Aug"
+  timeRange         String?    // e.g. "9:30 AM - 1:00 PM"
+  venueAddress      String     @db.Text
+  venueLink         String?    // Google Maps directions URL
+  latitude          Float?     // Exact Latitude for map rendering
+  longitude         Float?     // Exact Longitude for map rendering
+  clusterName       String?    // e.g. "HITEC City / Mindspace"
+  city              String?    // e.g. "Hyderabad"
+  reportingTime     String
+  requiredDocuments String[]
+  contactPerson     String?
+  contactPhone      String?
+  expiryDate        DateTime?
+  landmark          String?
+  transitInfo       String?
+  selectionProcess  String? @db.Text
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([city])
+  @@index([clusterName])
+  @@index([latitude, longitude])
+}
+
+// Competitions, hackathons, workshops, conferences. These are events, not
+// employment: they have prizes, team sizes and tracks, and they close on a
+// deadline. Dates live on Opportunity (startsAt/endsAt/registrationDeadline).
+model EventDetails {
+  id            String @id @default(uuid())
+  opportunityId String @unique
+
+  prizeAmount        Int?     // in INR; per-team totals for competitions
+  prizeCurrency      String?  @default("INR")
+  prizeBreakdown     Json?    // [{ place, amount }]
+  teamSizeMin        Int?
+  teamSizeMax        Int?
+  isTeamEvent        Boolean  @default(false)
+  participantLimit   Int?
+  tracks             String[] @default([])
+  eligibilityNotes   String?  @db.Text
+  rulesUrl           String?
+  registrationUrl    String?
+  platformUrl        String?  // Where the event actually happens
+  supportEmail       String?
+  resultAnnouncementDate DateTime?
+  organizerName      String?
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([prizeAmount])
+  @@index([teamSizeMin, teamSizeMax])
+}
+
+// Colleges and universities. Off-campus and pool-campus drives target named
+// institutions, and users want alerts when a drive targets their campus, so
+// institutions must be first-class rather than a free-text tag.
+model Institution {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  city      String?
+  state     String?
+  // "UNIVERSITY" | "COLLEGE" | "INSTITUTE" | "POLYTECHNIC" | "SCHOOL" | "OTHER"
+  kind      String   @default("COLLEGE")
+  website   String?
+  aliases   String[] @default([])
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  opportunities OpportunityInstitution[]
+  // Students who attend here — the join that makes campus alerts possible.
+  alumniProfiles  Profile[]            @relation("ProfileInstitution")
+  followedBySearches SavedSearchInstitution[]
+  // A college that also has an account on the platform. One canonical record,
+  // not two competing ones.
+  organization    Organization?        @relation("OrganizationInstitution")
+
+  @@index([name])
+  @@index([city, state])
+  @@index([kind])
+}
+
+// "Alert me when a drive targets my college" needs to be a real join, because
+// SavedSearch.filters is a serialized Json blob and cannot be filtered in SQL.
+model SavedSearchInstitution {
+  savedSearchId String
+  institutionId String
+  // "TARGETED" = drive run for this college, "ELIGIBLE" = open to it
+  targeting     String @default("TARGETED")
+
+  savedSearch SavedSearch @relation(fields: [savedSearchId], references: [id], onDelete: Cascade)
+  institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  @@id([savedSearchId, institutionId])
+  @@index([institutionId, targeting])
+  @@index([institutionId])
+}
+
+model OpportunityInstitution {
+  opportunityId String
+  institutionId String
+
+  // "ELIGIBLE" = open to this college, "TARGETED" = drive is run for it
+  targeting     String     @default("ELIGIBLE")
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  @@id([opportunityId, institutionId])
+  @@index([institutionId, targeting])
+  @@index([institutionId])
+}
+
+model GovernmentJobDetails {
+  id                     String   @id @default(uuid())
+  opportunityId          String   @unique
+  department             String?
+  organization           String?
+  recruitingBody         String?
+  officialWebsiteUrl     String?
+  officialNotificationUrl String?
+  advertisementNumber    String?
+  notificationIssuedDate String?
+  
+  applicationMode        String?
+  applicationStatus      GovernmentApplicationStatus?
+  governmentLevel        GovernmentLevel?
+  jobCategory            String[] @default([])
+  // Recruiting DOMAIN, not level: BANKING, DEFENCE, JUDICIARY, EDUCATION, RAILWAYS.
+  domain                 String?
+  // Canonical sub-category for filtering and counts. Keep values identical to
+  // the GOVT_CATEGORIES labels the UI uses: UPSC, SSC, Banking, Railways,
+  // State PSC, Defence, Teaching, Police, Engineering, Nursing. examName is
+  // free text and must not be used for this.
+  govtCategory           String?
+  examName               String?   // e.g. "SSC CGL", "RRB ALP", "UGC NET"
+  postName               String?   // e.g. "Assistant Section Officer, Inspector of Income Tax"
+  
+  vacancyCount           Int?
+  vacancyNature          VacancyNature?
+  vacancyBreakdown       Json?
+  categoryVacancies      Json?
+  vacancies              Json?
+  
+  payLevel               String?
+  payScale               String?
+  basicPay               Int?
+  allowances             String[] @default([])
+  
+  applicationFee         String?  @db.Text
+  applicationFeeDetails  Json?
+  feeBreakdown           Json?
+  
+  ageMin                 Int?
+  ageMax                 Int?
+  ageRelaxation          String?  @db.Text
+  ageRelaxationRules     Json?
+  
+  eligibilityDetails     Json?
+  qualificationDetails   Json?
+  physicalStandards      Json?
+  
+  cadreDetails           Json?
+  postPreferences        Json?
+  serviceBond            Json?
+  
+  reservationNotes       String?  @db.Text
+  reservationDetails     Json?
+  importantInstructions  String?  @db.Text
+  
+  // CANONICAL DATE RULE: the Opportunity-level applicationStartDate /
+  // applicationDeadline (real DateTime) are the source of truth and drive
+  // alerts and expiry. The fields below are the RAW values as printed in the
+  // notification, kept verbatim because government notices state dates in
+  // formats ("15.08.2026", "as notified") that do not always parse. Never read
+  // these for behaviour — parse them into the Opportunity columns instead.
+  applicationStartDate   String?
+  applicationEndDate     String?
+  examDate               String?
+  examDates              Json?
+  examStages             Json?
+  importantDates         Json?
+  admitCardDate          String?
+  resultDate             String?
+  
+  examCenters            String[] @default([])
+  examPattern            Json?
+  selectionStages        Json?
+  skillTests             Json?
+  
+  requiredDocuments      String[] @default([])
+  requiredDocumentDetails Json?
+  
+  referenceLinks         Json?
+  officialSourceVerified Boolean? @default(false)
+  sourceLastCheckedAt    DateTime?
+  notificationPdfUrl     String?
+  admitCardUrl           String?
+  resultUrl              String?
+  answerKeyUrl           String?
+  syllabusUrl            String?
+  previousPapersUrl      String?
+  
+  cutOffMarks            Json?     // { year, category, marks }[]
+  extraMetadata          Json?     // helpline, vacancyTrend, postWiseSalary, postClassification, rules, etc.
+  seoTags                String[] @default([])
+  
+  extractionConfidence   Float?
+  
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([department])
+  @@index([organization])
+  @@index([govtCategory])
+  @@index([seoTags], type: Gin)
+}
+
+model SavedOpportunity {
+  id            String      @id @default(uuid())
+  userId        String
+  opportunityId String
+  createdAt     DateTime    @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, opportunityId])
+  @@index([userId])
+}
+
+// ============================================================================
+// USER TRACKING MODELS
+// ============================================================================
+
+model UserAction {
+  id            String     @id @default(uuid())
+  userId        String
+  opportunityId String
+  actionType    ActionType // Enum
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, opportunityId])
+  @@index([opportunityId, actionType])
+}
+
+// ── The community funnel ─────────────────────────────────────────────────────
+// A user applying to a job, registering for a hackathon and enrolling in a
+// scholarship are the same act: they committed to an opportunity. One record
+// covers every category, so the taxonomy never has to special-case it.
+//
+// This is deliberately separate from UserAction, which stays for lightweight
+// signals (VIEWED / SHARED / PLANNED / OA) and allows only one row per
+// user+opportunity, so it cannot hold a real funnel.
+// Verification state of a LISTING. Intentionally separate from UserTrustLevel,
+// which describes a person (BANNED / CONTRIBUTOR / MODERATOR).
+enum OpportunityTrustLevel {
+  UNVERIFIED
+  COMMUNITY_REPORTED
+  VERIFIED
+  FLAGGED
+  REJECTED
+}
+
+enum ApplicationStage {
+  APPLIED
+  REGISTERED
+  IN_REVIEW
+  ASSESSMENT
+  INTERVIEW
+  OFFERED
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  SKIPPED
+  PARTICIPATED
+}
+
+model OpportunityApplication {
+  id            String           @id @default(uuid())
+  userId        String
+  opportunityId String
+  stage         ApplicationStage @default(APPLIED)
+  // The exact step of THIS employer's process that the candidate reached —
+  // "Technical round 2", "Case study". `stage` above stays the coarse funnel for
+  // reporting; this is the fine-grained truth from HiringPipeline.
+  currentStageId   String?
+  currentStage     RecruitmentStage?   @relation(fields: [currentStageId], references: [id], onDelete: SetNull)
+  // Kind of the current step, denormalised for filtering without a join.
+  currentStageKind RecruitmentStageKind?
+  stageEnteredAt   DateTime?
+  // Kind-specific result: "Offer accepted", "Won 1st place", "Cleared round 2"
+  outcome       String?
+  outcomeData   Json?
+  appliedAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, opportunityId])
+  @@index([opportunityId, stage])
+  @@index([userId, appliedAt(desc)])
+  @@index([stage])
+}
+
+model ListingFeedback {
+  id            String         @id @default(uuid())
+  userId        String
+  opportunityId String
+  reason        FeedbackReason // Enum
+  description   String?        @db.Text
+  createdAt     DateTime       @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, opportunityId]) // One feedback per user per listing
+}
+
+model AppFeedback {
+  id        String          @id @default(uuid())
+  userId    String
+  type      AppFeedbackType
+  rating    Int?
+  message   String          @db.Text
+  pageUrl   String?
+  createdAt DateTime        @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([type])
+  @@index([createdAt])
+}
+
+model AlertPreference {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  enabled           Boolean  @default(true)
+  emailEnabled      Boolean  @default(true)
+  dailyDigest       Boolean  @default(true)
+  closingSoon       Boolean  @default(true)
+  minRelevanceScore Int      @default(45)
+  preferredHour     Int      @default(8)
+  timezone          String   @default("Asia/Kolkata")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  lastDigestSentAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PlatformEvent {
+  id            String            @id @default(uuid())
+  type          PlatformEventType
+  opportunityId String?
+  userId        String?
+  sessionId     String?
+  source        String?           @default("unknown")
+  metadata      Json?
+  createdAt     DateTime          @default(now())
+
+  user        User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([type, createdAt])
+  @@index([opportunityId, createdAt])
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+}
+
+// DEPRECATED Models (To be removed after migration)
+// model GrowthEvent { ... }
+// model ReferralVisit { ... }
+// model OpportunityClick { ... }
+
+model ReferralBadgeGrant {
+  id        String         @id @default(uuid())
+  userId    String
+  badge     ReferralBadge
+  metadata  Json?
+  createdAt DateTime       @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, badge])
+  @@index([badge, createdAt])
+}
+
+// Removed OpportunityClick (Moved to PlatformEvent)
+
+model AlertDelivery {
+  id            String       @id @default(uuid())
+  userId        String
+  opportunityId String?
+  kind          AlertKind
+  channel       AlertChannel @default(EMAIL)
+  dedupeKey     String       @unique
+  sentAt        DateTime     @default(now())
+  readAt        DateTime?
+  metadata      String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+
+  @@index([userId, kind])
+  @@index([userId, channel, sentAt])
+  @@index([sentAt])
+  @@index([readAt])
+}
+
+model AlertDispatchLog {
+  id            String              @id @default(uuid())
+  correlationId String
+  userId        String?
+  opportunityId String?
+  kind          AlertKind
+  channel       AlertChannel?
+  status        AlertDispatchStatus
+  reason        AlertDispatchReason?
+  dedupeKey     String?
+  errorMessage  String?
+  metadata      Json?
+  attemptedAt   DateTime?
+  deliveredAt   DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  user        User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+
+  @@index([correlationId])
+  @@index([createdAt])
+  @@index([status, createdAt])
+  @@index([kind, channel, createdAt])
+  @@index([reason, createdAt])
+}
+
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String             // "ios" | "android"
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model OpportunityEvent {
+  id            String               @id @default(uuid())
+  opportunityId String
+  eventType     OpportunityEventType
+  eventDate     DateTime
+  title         String
+  notes         String?              @db.Text
+  sourceLink    String?
+  // Provenance: who told us, and with what authority. A candidate who received
+  // an assessment mail reports it as USER/UNVERIFIED; a moderator or admin
+  // confirms it. Without this, a rumour looks like an official notice.
+  authorId      String?
+  authorRole    EventAuthorRole      @default(USER)
+  verification  EventVerification    @default(UNVERIFIED)
+  verifiedByUserId String?
+  verifiedAt   DateTime?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  author      User?       @relation("OpportunityEventAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  verifiedBy  User?       @relation("OpportunityEventVerifier", fields: [verifiedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([opportunityId, eventDate])
+  @@index([eventDate])
+  // The moderation queue: unverified reports waiting for a human.
+  @@index([verification, createdAt])
+  @@index([authorId])
+  @@index([eventType, verification])
+}
+
+enum TelegramBroadcastStatus {
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum IngestionSourceType {
+  JSON_FEED
+  WORKDAY
+  GREENHOUSE
+  LEVER
+  CUSTOM
+}
+
+enum IngestionRunStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
+enum RawOpportunityStatus {
+  FETCHED
+  DRAFT_CREATED
+  DEDUPED
+  REJECTED
+  ERROR
+}
+
+model TelegramBroadcast {
+  id            String                  @id @default(uuid())
+  opportunityId String
+  channel       String
+  dedupeKey     String                  @unique
+  status        TelegramBroadcastStatus @default(SKIPPED)
+  messageId     String?
+  errorMessage  String?
+  sentAt        DateTime?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([opportunityId, status])
+  @@index([channel])
+}
+
+model SocialPost {
+  id              String           @id @default(uuid())
+  platform        SocialPlatform
+  opportunityId   String
+  status          SocialPostStatus @default(PENDING)
+  externalPostId  String?
+  dedupeKey       String           @unique
+  errorMessage    String?          @db.Text
+  payload         Json?
+  scheduledFor    DateTime?
+  publishedAt     DateTime?
+  retryCount      Int              @default(0)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  opportunity     Opportunity      @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([opportunityId, platform, status])
+  @@index([scheduledFor, status])
+  @@index([createdAt])
+}
+
+model UserFollow {
+  id          String    @id @default(cuid())
+  userId      String
+  type        FollowType
+  value       String      // tag name, company name, or contributor userId
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, value])
+  @@index([userId])
+  @@index([type, value])
+}
+
+enum FollowType {
+  TAG
+  COMPANY
+  CONTRIBUTOR
+}
+
+model IngestionSource {
+  id                  String              @id @default(uuid())
+  name                String
+  sourceType          IngestionSourceType
+  endpoint            String
+  enabled             Boolean             @default(true)
+  runFrequencyMinutes Int                 @default(60)
+  defaultCategory     OpportunityCategory    @default(EMPLOYMENT)
+  createdByUserId     String?
+  lastRunAt           DateTime?
+  lastSuccessAt       DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  runs      IngestionRun[]
+  rawItems  RawOpportunity[]
+
+  @@index([enabled, sourceType])
+  @@index([lastRunAt])
+}
+
+model IngestionRun {
+  id                String             @id @default(uuid())
+  sourceId          String
+  status            IngestionRunStatus @default(RUNNING)
+  startedAt         DateTime           @default(now())
+  endedAt           DateTime?
+  fetchedCount      Int                @default(0)
+  draftCreatedCount Int                @default(0)
+  dedupedCount      Int                @default(0)
+  rejectedCount     Int                @default(0)
+  errorCount        Int                @default(0)
+  errorSummary      String?
+
+  source   IngestionSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  rawItems RawOpportunity[]
+
+  @@index([sourceId, startedAt])
+  @@index([status, startedAt])
+}
+
+model RawOpportunity {
+  id                  String               @id @default(uuid())
+  sourceId            String
+  ingestionRunId      String?
+  sourceExternalId    String?
+  status              RawOpportunityStatus @default(FETCHED)
+  rawPayload          Json
+  title               String?
+  company             String?
+  sourceLink          String?
+  applyLink           String?
+  suggestedCategory   OpportunityCategory?
+  fresherScore        Int?
+  reasonFlags         String[]             @default([])
+  mappedOpportunityId String?
+  createdByUserId     String?
+  errorMessage        String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  source            IngestionSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  ingestionRun      IngestionRun?   @relation(fields: [ingestionRunId], references: [id], onDelete: SetNull)
+  mappedOpportunity Opportunity?    @relation(fields: [mappedOpportunityId], references: [id], onDelete: SetNull)
+  createdBy         User?           @relation("UserRawContributions", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([sourceId, createdAt])
+  @@index([status, createdAt])
+  @@index([sourceLink])
+  @@index([applyLink])
+  @@index([createdByUserId])
+  // Ingestion identity is the PAIR, not the external id alone: Greenhouse job
+  // 123 and another source's job 123 are different records. Postgres treats
+  // NULL as distinct, so rows with no external id are still allowed.
+  @@unique([sourceId, sourceExternalId])
+}
+
+model DomainReputation {
+  id             String   @id @default(uuid())
+  domain         String   @unique
+  trustScore     Float    @default(0.5) // 0.0 to 1.0
+  isOfficial     Boolean  @default(false)
+  notes          String?
+  lastActivityAt DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([domain])
+  @@index([trustScore])
+}
+
+model OpportunityComment {
+  id              String      @id @default(cuid())
+  opportunityId   String
+  userId          String
+  parentCommentId String?
+  commentType     CommentType @default(GENERAL)
+  text            String      @db.VarChar(500)
+  upvotes         Int         @default(0)
+  downvotes       Int         @default(0)
+  createdAt       DateTime    @default(now())
+  editedAt        DateTime?
+  deletedAt       DateTime?
+
+  opportunity   Opportunity          @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent        OpportunityComment?  @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: Cascade)
+  replies       OpportunityComment[] @relation("CommentReplies")
+  votes         CommentVote[]
+  reports       Report[]
+  notifications Notification[]
+
+  @@index([opportunityId, createdAt])
+  @@index([userId])
+  @@index([parentCommentId])
+}
+
+// ============================================================================
+// COMMUNITY MODELS (plan 09b §6.2 — additive, tranche 1)
+// CommunityPost / PostVote arrive with tranche 2.
+// ============================================================================
+
+enum CommentType {
+  GENERAL
+  QUESTION
+  EXPERIENCE
+  UPDATE
+  CORRECTION
+  WARNING
+  REFERRAL
+}
+
+enum CommentVoteValue {
+  UPVOTE
+  DOWNVOTE
+}
+
+enum JobSignalType {
+  APPLIED
+  INTERVIEWED
+  OFFER
+  CLOSED
+  HELPFUL
+  INCORRECT
+}
+
+enum JobSubmissionStatus {
+  PUBLISHED
+  MERGED
+  PENDING_REVIEW
+  REJECTED
+}
+
+enum ReportReason {
+  SPAM
+  INACCURATE
+  EXPIRED
+  OFFENSIVE
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  REVIEWING
+  RESOLVED
+  DISMISSED
+}
+
+enum CommunityPostCategory {
+  DISCUSSION
+  QUESTION
+  EXPERIENCE
+  INTERVIEW_EXPERIENCE
+  HIRING_UPDATE
+  UPDATE
+  REFERRAL
+  OTHER
+}
+
+enum CommunityPostStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum NotificationType {
+  COMMENT_REPLY
+  COMMENT_VOTE
+  JOB_SIGNAL_MILESTONE
+  JOB_UPDATED
+  JOB_CLOSED
+  NEW_MATCHING_JOB
+  EXPIRED_JOB
+  COMMENT_ON_EXPIRED
+  ROOM_HELPFUL
+  INTRO_REQUEST
+  CAMPUS_DRIVE_MATCH
+  REGISTRATION_OPEN
+  REGISTRATION_CLOSING
+  OPPORTUNITY_APPLIED
+  APPLICATION_STAGE_CHANGED
+  REFERRAL_RESPONSE
+}
+
+model CommentVote {
+  id        String           @id @default(cuid())
+  commentId String
+  userId    String
+  value     CommentVoteValue
+  createdAt DateTime         @default(now())
+
+  comment OpportunityComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@index([userId])
+}
+
+model JobSignal {
+  id            String        @id @default(cuid())
+  opportunityId String
+  userId        String
+  signalType    JobSignalType
+  createdAt     DateTime      @default(now())
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([opportunityId, userId, signalType])
+  @@index([opportunityId, signalType])
+}
+
+model JobSubmission {
+  id            String              @id @default(cuid())
+  sourceUrl     String
+  applyUrl      String?
+  title         String
+  company       String?
+  description   String?             @db.Text
+  extractedData Json?
+  status        JobSubmissionStatus @default(PENDING_REVIEW)
+  submittedById String
+  opportunityId String?
+  createdAt     DateTime            @default(now())
+
+  submittedBy User         @relation("JobSubmissions", fields: [submittedById], references: [id], onDelete: Cascade)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+
+  @@index([sourceUrl])
+  @@index([submittedById])
+}
+
+model Report {
+  id            String       @id @default(cuid())
+  reporterId    String
+  opportunityId String?
+  commentId     String?
+  reason        ReportReason
+  message       String?      @db.VarChar(1000)
+  status        ReportStatus @default(OPEN)
+  resolvedById  String?
+  resolvedAt    DateTime?
+  createdAt     DateTime     @default(now())
+
+   reporter    User                @relation("ReportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
+   resolvedBy  User?               @relation("ReportsResolved", fields: [resolvedById], references: [id], onDelete: SetNull)
+   opportunity Opportunity?        @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+   comment     OpportunityComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+   communityPosts CommunityPost[]
+   communityPostComments CommunityPostComment[]
+
+  @@index([status, createdAt])
+  @@index([reporterId])
+}
+
+model Notification {
+  id            String           @id @default(cuid())
+  userId        String
+  type          NotificationType
+  actorId       String?
+  opportunityId String?
+  commentId     String?
+  payload       Json?
+  readAt        DateTime?
+  createdAt     DateTime         @default(now())
+
+  user        User                @relation("NotificationsReceived", fields: [userId], references: [id], onDelete: Cascade)
+  actor       User?               @relation("NotificationsActed", fields: [actorId], references: [id], onDelete: SetNull)
+  opportunity Opportunity?        @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  comment     OpportunityComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+}
+
+model ResourceCollection {
+  id              String             @id @default(uuid())
+  title           String
+  description     String?
+  company         String?
+  skills          String[]           @default([])
+  tags            String[]           @default([])
+  addedByUserId   String?
+  addedByUsername String?
+  status          ResourceItemStatus @default(PENDING_REVIEW)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  items           ResourceItem[]
+
+  sector          ResourceSector     @default(PRIVATE)
+
+  @@index([company])
+  @@index([skills], type: Gin)
+  @@index([status])
+  @@index([sector])
+}
+
+model ResourceItem {
+  id           String             @id @default(uuid())
+  collectionId String
+  collection   ResourceCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  title        String
+  type         ResourceItemType
+  url          String
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([collectionId])
+}
+
+enum ResourceSector {
+  PRIVATE
+  GOVERNMENT
+}
+
+/// Recruiter intro request on a public profile (profile pages v1)
+model IntroRequest {
+  id              String   @id @default(cuid())
+  recruiterId     String? // null for anonymous (pre-registration) recruiters
+  candidateId     String
+  message         String?  @db.VarChar(1000)
+  status          IntroRequestStatus @default(PENDING)
+  createdAt       DateTime @default(now())
+
+  recruiter User? @relation("IntroRequestsSent", fields: [recruiterId], references: [id], onDelete: SetNull)
+  candidate User @relation("IntroRequestsReceived", fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([recruiterId, candidateId])
+  @@index([candidateId, createdAt])
+  @@index([recruiterId, createdAt])
+}
+
+/// Unique-view counter for public /u/ pages (no FK by design — anonymous viewers)
+model PublicProfileView {
+  id        String   @id @default(cuid())
+  profileId String // Profile.userId of the owner
+  viewerKey String // "u:<userId>" for signed-in viewers, "s:<sessionId>" / "ip:<hash>" otherwise
+  viewedAt  DateTime @default(now())
+
+  @@unique([profileId, viewerKey])
+  @@index([profileId])
+}
+
+enum IntroRequestStatus {
+  PENDING
+  CONTACTED
+  ARCHIVED
+}
+
+model SavedCandidate {
+  id             String   @id @default(cuid())
+  recruiterId    String
+  candidateId    String
+  collectionName String?
+  savedAt        DateTime @default(now())
+
+  recruiter User @relation("RecruiterSaved", fields: [recruiterId], references: [id], onDelete: Cascade)
+  candidate User @relation("SavedByRecruiter", fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([recruiterId, candidateId])
+  @@index([recruiterId])
+  @@index([candidateId])
+}
+
+model ProfileView {
+  id             String   @id @default(cuid())
+  candidateId    String
+  organizationId String?
+  recruiterId    String
+  viewedAt       DateTime @default(now())
+
+  candidate User     @relation("ProfileViewed", fields: [candidateId], references: [id], onDelete: Cascade)
+  recruiter User     @relation("RecruiterViews", fields: [recruiterId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId, viewedAt])
+  @@index([recruiterId])
+}
+
+// ============================================================================
+// ORGANIZATION & RECRUITER DOMAIN MODELS
+// ============================================================================
+
+enum OrganizationType {
+  COMPANY
+  ENGINEERING_COLLEGE
+  TRAINING_INSTITUTE
+  BOOTCAMP
+  NGO
+  PLACEMENT_CELL
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  RECRUITER
+  VIEWER
+}
+
+enum MembershipStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Organization {
+  id           String           @id @default(cuid())
+  name         String
+  slug         String           @unique
+  type         OrganizationType @default(COMPANY)
+  website      String?
+  emailDomain  String?
+  logo         String?
+  verified     Boolean          @default(false)
+  verifiedAt   DateTime?
+  active       Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  members      OrganizationMembership[]
+  invites      OrganizationInvite[]
+  interests    CandidateInterest[]
+  // Listings this organisation owns and can manage.
+  opportunities Opportunity[] @relation("OrganizationOpportunities")
+  // The hiring process this organisation runs, reusable across its listings.
+  pipelines     HiringPipeline[] @relation("OrganizationPipelines")
+  // A college account points at its canonical Institution record, so campus
+  // targeting has one source of truth instead of two competing ones.
+  institutionId String?       @unique
+  institution   Institution?  @relation("OrganizationInstitution", fields: [institutionId], references: [id], onDelete: SetNull)
+}
+
+model OrganizationMembership {
+  id             String           @id @default(cuid())
+  userId         String
+  organizationId String
+  role           OrgRole          @default(RECRUITER)
+  status         MembershipStatus @default(APPROVED)
+  invitedBy      String?
+  joinedAt       DateTime         @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+model OrganizationInvite {
+  id             String    @id @default(cuid())
+  organizationId String
+  email          String
+  role           OrgRole   @default(RECRUITER)
+  invitedBy      String
+  token          String    @unique @default(cuid())
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([token])
+}
+
+// ============================================================================
+// CANDIDATE PORTFOLIO & RECRUITER ATS CANDIDATE INTEREST MODELS
+// ============================================================================
+
+model Project {
+  id          String   @id @default(cuid())
+  userId      String
+  title       String
+  description String?
+  githubUrl   String?
+  liveUrl     String?
+  skills      String[]
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum CandidateInterestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  INTERVIEW_SCHEDULED
+  OFFER_SENT
+  JOINED
+  REJECTED
+}
+
+model CandidateInterest {
+  id             String                  @id @default(cuid())
+  organizationId String
+  recruiterId    String
+  candidateId    String
+  opportunityId  String?
+  message        String?
+  status         CandidateInterestStatus @default(PENDING)
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recruiter    User         @relation("RecruiterInterests", fields: [recruiterId], references: [id], onDelete: Cascade)
+  candidate    User         @relation("CandidateInterests", fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([recruiterId])
+  @@index([candidateId])
+}
+
+model CompanyTarget {
+  id           String    @id @default(cuid())
+  company      String
+  ats          String    // matches PLUGIN_REGISTRY key
+  slug         String
+  active       Boolean   @default(true)
+  priority     Int       @default(0)
+  lastRunAt    DateTime?
+  lastJobCount Int?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([ats, slug])
+}
+
+// ============================================================================
+// COMMUNITY POST MODELS
+// ============================================================================
+
+model CommunityPost {
+  id              String                @id @default(cuid())
+  authorId        String
+  author          User                  @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  title           String
+  body            String                @db.Text
+  category        CommunityPostCategory @default(DISCUSSION)
+  tags            String[]              @default([])
+  isAnonymous     Boolean               @default(false)
+  anonId          String?
+  likesCount      Int                   @default(0)
+  commentsCount   Int                   @default(0)
+  status          CommunityPostStatus   @default(ACTIVE)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  expiredAt       DateTime?
+  sourceOpportunityId String?
+  roomId          String?
+
+  room            Room?               @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  comments        CommunityPostComment[]
+  votes           CommunityPostVote[]
+  reports         Report[]
+
+  @@index([createdAt])
+  @@index([category])
+  @@index([status])
+  @@index([authorId])
+  @@index([sourceOpportunityId])
+  @@index([roomId])
+  @@index([tags], type: Gin)
+}
+
+model CommunityPostComment {
+  id          String                @id @default(cuid())
+  postId      String
+  post        CommunityPost         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId    String
+  author      User                  @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parentId    String?
+  parent      CommunityPostComment? @relation("CommentReplies", fields: [parentId], references: [id])
+  body        String                @db.Text
+  isAnonymous Boolean               @default(false)
+  anonId      String?
+  likesCount  Int                   @default(0)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  deletedAt   DateTime?
+
+  replies     CommunityPostComment[] @relation("CommentReplies")
+  votes       CommunityPostVote[]
+  reports     Report[]
+
+  @@index([postId, createdAt])
+  @@index([parentId])
+  @@index([authorId])
+}
+
+model CommunityPostVote {
+  id        String   @id @default(cuid())
+  postId    String?
+  commentId String?
+  userId    String
+  value     Int      // 1 or -1
+  createdAt DateTime @default(now())
+
+  post    CommunityPost?        @relation(fields: [postId], references: [id], onDelete: Cascade)
+  comment CommunityPostComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@unique([commentId, userId])
+  @@index([userId])
+}
+
+// ============================================================================
+// PHASE 2: STRUCTURED COMMUNITY ENTITIES
+// ============================================================================
+
+enum InterviewResult {
+  SELECTED
+  REJECTED
+  WAITING
+  WITHDRAWN
+}
+
+enum InterviewDifficulty {
+  EASY
+  MEDIUM
+  HARD
+  VERY_HARD
+}
+
+enum ApplicationStatus {
+  APPLIED
+  ASSESSMENT_RECEIVED
+  ASSESSMENT_COMPLETED
+  INTERVIEW_SCHEDULED
+  INTERVIEW_COMPLETED
+  SELECTED
+  REJECTED
+  WAITING
+  NO_RESPONSE
+}
+
+model InterviewExperience {
+  id              String              @id @default(cuid())
+  opportunityId   String
+  authorId        String
+  role            String              @db.VarChar(200)
+  batch           Int?
+  rounds          Json                // [{ name, questions[], notes }]
+  difficulty      InterviewDifficulty?
+  result          InterviewResult?
+  interviewDate   DateTime?
+  overallNotes    String?             @db.Text
+  upvotes         Int                 @default(0)
+  downvotes       Int                 @default(0)
+    status          CommunityPostStatus @default(ACTIVE)
+    createdAt       DateTime            @default(now())
+    updatedAt       DateTime            @updatedAt
+
+    opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+    author      User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+    votes       InterviewExperienceVote[]
+
+  @@index([opportunityId, createdAt])
+  @@index([authorId])
+  @@index([result])
+}
+
+model InterviewExperienceVote {
+  id                    String @id @default(cuid())
+  interviewExperienceId String
+  userId                String
+  value                 Int    // 1 or -1
+  createdAt             DateTime @default(now())
+
+  interviewExperience InterviewExperience @relation(fields: [interviewExperienceId], references: [id], onDelete: Cascade)
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([interviewExperienceId, userId])
+  @@index([userId])
+}
+
+model ApplicationUpdate {
+  id            String              @id @default(cuid())
+  opportunityId String
+  authorId      String
+  status        ApplicationStatus
+  description   String?             @db.Text
+  evidenceUrl   String?             @db.VarChar(2000)
+  createdAt     DateTime            @default(now())
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  author      User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([opportunityId, createdAt])
+  @@index([authorId])
+  @@index([status])
+}
+
+// ============================================================================
+// PHASE 3: ROOMS (Persistent Communities)
+// ============================================================================
+
+// A Room is not a CommunityPost, so it gets its own lifecycle enum rather than
+// borrowing CommunityPostStatus.
+enum RoomStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum RoomMemberRole {
+  MEMBER
+  MODERATOR
+  ADMIN
+}
+
+model Room {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String   @db.VarChar(100)
+  description String?  @db.Text
+  icon        String?  @db.VarChar(10)
+  // A room is a COMMUNITY, not a saved search. It is described by free-form
+  // tags: #2026, #mca, #swe, #hyderabad, #tcs. This replaces a RoomType enum
+  // plus a structured criteria object, which turned rooms into a third matching
+  // system alongside SavedSearch and forced a single dimension per room.
+  // One room can now span company + batch + role at once.
+  tags        String[] @default([])
+  memberCount Int      @default(0)
+  postCount   Int      @default(0)
+  // Not "jobCount": the platform also carries competitions, scholarships,
+  // education and events.
+  opportunityCount Int @default(0)
+  isPublic    Boolean  @default(true)
+  status      RoomStatus @default(ACTIVE)
+  createdByUserId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  createdBy User?         @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  members   RoomMember[]
+  posts     CommunityPost[]
+  // Opportunities this group surfaces, by deliberate sharing or curation.
+  // Without this join, the counter above was an integer nobody could maintain
+  // or query.
+  opportunities RoomOpportunity[]
+
+  @@index([slug])
+  @@index([tags], type: Gin)
+  @@index([memberCount(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+
+  @@map("areas")
+}
+
+// Opportunities deliberately surfaced inside a community. They are shared or
+// curated by members and moderators — NOT automatically matched from the room's
+// tags. Personal matching is SavedSearch's job; a room is a place people gather.
+// Room.opportunityCount is a denormalised counter of these rows.
+enum RoomOpportunityReason {
+  // MATCHED is deliberately gone. Automatic surfacing belongs to SavedSearch
+  // (personal matching) and a future recommendation engine, not to the room.
+  PINNED   // an owner or moderator curated it to the top
+  SHARED   // a member shared it into the community
+}
+
+model RoomOpportunity {
+  roomId        String
+  opportunityId String
+  reason        RoomOpportunityReason @default(SHARED)
+  addedByUserId String?
+  createdAt     DateTime      @default(now())
+
+  room        Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  addedBy     User?       @relation(fields: [addedByUserId], references: [id], onDelete: SetNull)
+
+  @@id([roomId, opportunityId])
+  @@index([opportunityId])
+  @@index([roomId, reason])
+}
+
+model RoomMember {
+  id        String   @id @default(cuid())
+  roomId    String
+  userId    String
+  role      RoomMemberRole @default(MEMBER)
+  joinedAt  DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([userId])
+
+  @@map("area_members")
+}
+
+// ============================================================================
+// FRESHER NEEDS: Saved searches, referrals board, offer transparency
+// ============================================================================
+
+enum ReferralRequestStatus {
+  OPEN
+  FULFILLED
+  CLOSED
+}
+
+// ── Hiring pipeline ───────────────────────────────────────────────────────────
+// A hiring process is an ORDERED LIST OF STAGES that differs per company: one
+// firm runs screening, two technical rounds, then HR and an offer; another runs
+// a coding assessment and a case study. Encoding that as a fixed enum is what
+// made the lifecycle vocabulary grow forever, so the concrete steps are DATA.
+//
+// RecruitmentStageKind stays a small, stable vocabulary (it is the axis we want
+// to filter and report on). Everything company-specific — how many rounds, what
+// they are called, how long each takes — lives in RecruitmentStage rows.
+enum RecruitmentStageKind {
+  SCREENING
+  ASSESSMENT
+  INTERVIEW
+  CASE_STUDY
+  GROUP_EXERCISE
+  OFFER
+  TRAINING
+  ONBOARDING
+  OTHER
+}
+
+model HiringPipeline {
+  id             String        @id @default(uuid())
+  // The organisation that owns this process. Null for the platform default
+  // template, which is used for scraped listings whose employer has no account.
+  organizationId String?
+  organization   Organization? @relation("OrganizationPipelines", fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  isDefault      Boolean       @default(false)
+  // The platform-supplied template, not editable by an organisation.
+  isTemplate     Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  stages        RecruitmentStage[]
+  opportunities Opportunity[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model RecruitmentStage {
+  id           String               @id @default(uuid())
+  pipelineId   String
+  kind         RecruitmentStageKind
+  // Company-specific label: "Technical round 2", "Case study", "Onboarding".
+  name         String
+  order        Int
+  expectedDays Int?
+
+  pipeline     HiringPipeline         @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  applications OpportunityApplication[]
+
+  @@unique([pipelineId, order])
+  @@index([kind])
+  @@index([pipelineId, order])
+}
+
+model SavedSearch {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String   @db.VarChar(100)
+  // Serialized filter combo (type, city, batch, tags, minSalary, feedType, ...)
+  filters     Json
+  alertEnabled Boolean @default(true)
+  lastMatchedAt DateTime?
+  lastNotifiedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  institutions SavedSearchInstitution[]
+
+  @@index([userId])
+  @@index([alertEnabled, lastNotifiedAt])
+}
+
+model ReferralRequest {
+  id          String   @id @default(cuid())
+  authorId    String
+  company     String   @db.VarChar(120)
+  role        String?  @db.VarChar(120)
+  batch       Int?
+  city        String?  @db.VarChar(80)
+  note        String?  @db.VarChar(1000)
+  status      ReferralRequestStatus @default(OPEN)
+  responseCount Int    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  author    User              @relation("ReferralRequestAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  responses ReferralResponse[]
+
+  @@index([company])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([authorId])
+}
+
+model ReferralResponse {
+  id              String   @id @default(cuid())
+  requestId       String
+  responderId     String
+  message         String?  @db.VarChar(1000)
+  contactHandle   String?  @db.VarChar(200) // email / LinkedIn / Telegram handle shared by responder
+  createdAt       DateTime @default(now())
+
+  request ReferralRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  responder User          @relation("ReferralResponseAuthor", fields: [responderId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, responderId])
+  @@index([responderId])
+}
+
+enum SalaryReportType {
+  OFFER
+  CURRENT_CTC
+}
+
+model SalaryReport {
+  id           String   @id @default(cuid())
+  authorId     String
+  opportunityId String?
+  company      String   @db.VarChar(120)
+  role         String   @db.VarChar(120)
+  batch        Int?
+  city         String?  @db.VarChar(80)
+  reportType   SalaryReportType @default(OFFER)
+  ctcFixed     Int?     // Fixed pay in INR thousands (e.g. 350 = 3.5 LPA)
+  ctcVariable  Int?     // Variable/bonus in INR thousands
+  ctcTotal     Int?     // Stated CTC in INR thousands
+  inHandMonthly Int?    // Take-home per month in INR
+  joinBonus    Int?     // One-time joining bonus in INR thousands
+  bondMonths   Int?     // Service agreement length
+  notes        String?  @db.VarChar(1000)
+  helpfulCount Int      @default(0)
+  status       CommunityPostStatus @default(ACTIVE)
+  createdAt    DateTime @default(now())
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  author      User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  helpfulMarks SalaryReportHelpful[]
+
+  @@index([company])
+  @@index([opportunityId])
+  @@index([authorId])
+  @@index([status, createdAt(sort: Desc)])
+}
+
+model SalaryReportHelpful {
+  id             String @id @default(cuid())
+  salaryReportId String
+  userId         String
+  createdAt      DateTime @default(now())
+
+  report SalaryReport @relation(fields: [salaryReportId], references: [id], onDelete: Cascade)
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([salaryReportId, userId])
+  @@index([userId])
+}

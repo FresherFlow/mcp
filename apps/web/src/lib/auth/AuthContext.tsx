@@ -1,0 +1,618 @@
+'use client';
+
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { authApi, UnauthorizedError, clearUserTokens, setUserTokens } from '@/lib/api/client';
+import { clearUnreadCache } from '@/lib/cache/unreadCount';
+import { isSafeInternalRedirect } from '@/lib/config/paths';
+import { User, Profile } from '@fresherflow/types';
+
+interface AuthContextType {
+    user: User | null;
+    profile: Profile | null;
+    isLoading: boolean;
+    skipUsernameSetup: boolean;
+    sendOtp: (email: string) => Promise<void>;
+    verifyOtp: (email: string, code: string, source?: string, ref?: string) => Promise<User>;
+    loginWithGoogle: (source?: string, ref?: string) => Promise<User>;
+    logout: (redirectTo?: string) => Promise<void>;
+    refreshUser: () => Promise<void>;
+    refreshProfile: () => Promise<void>;
+    forceRefreshProfile: () => Promise<void>;
+    skipUsername: () => Promise<void>;
+    updateProfileState: (updated: Partial<Profile> & { fullName?: string }, apiSyncTask?: () => Promise<unknown>) => void;
+}
+
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const AUTH_VISIBILITY_REFRESH_COOLDOWN_MS = Number(process.env.NEXT_PUBLIC_AUTH_VISIBILITY_REFRESH_COOLDOWN_MS || 300000);
+const SESSION_REVALIDATE_MS = Number(process.env.NEXT_PUBLIC_SESSION_REVALIDATE_MS || 30 * 60 * 1000);
+const SESSION_HINT_COOKIE_MAX_AGE_SECONDS = Number(process.env.NEXT_PUBLIC_SESSION_HINT_COOKIE_MAX_AGE_SECONDS || 90 * 24 * 60 * 60);
+
+const SESSION_CACHE_KEY = 'ff_cached_session_v1';
+const LAST_AUTH_KEY = 'ff_last_auth_method';
+const ONBOARDING_WINDOW_MS = 24 * 60 * 60 * 1000; // dub: 24h window
+
+function setLastAuthMethod(method: 'otp' | 'google') {
+    try { localStorage.setItem(LAST_AUTH_KEY, method); } catch {}
+}
+export function getLastAuthMethod(): 'otp' | 'google' | null {
+    try { return localStorage.getItem(LAST_AUTH_KEY) as any; } catch { return null; }
+}
+function isWithinOnboardingWindow(user: User | null): boolean {
+    if (!user || user.username) return false;
+    const created = (user as any).createdAt ? new Date((user as any).createdAt).getTime() : 0;
+    if (!created) return !user.username; // fallback: if no createdAt, treat missing username as window
+    return Date.now() - created < ONBOARDING_WINDOW_MS;
+}
+
+type CachedSession = {
+    user: User;
+    profile: Profile | null;
+    skipUsernameSetup?: boolean;
+    savedAt: number;
+};
+
+function readCachedSession(): CachedSession | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        const raw = localStorage.getItem(SESSION_CACHE_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw) as CachedSession;
+    } catch {
+        return null;
+    }
+}
+
+function writeCachedSession(user: User, profile: Profile | null, skipUsernameSetup?: boolean) {
+    if (typeof window === 'undefined') return;
+    try {
+        const payload: CachedSession = { user, profile, skipUsernameSetup, savedAt: Date.now() };
+        localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(payload));
+    } catch { /* Ignore quota errors */ }
+}
+
+function clearCachedSession() {
+    if (typeof window === 'undefined') return;
+    try { localStorage.removeItem(SESSION_CACHE_KEY); } catch { /* empty */ }
+}
+
+function clearAllClientCaches() {
+    if (typeof window === 'undefined') return;
+    try {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && (
+                key === 'ff_cached_session_v1' || 
+                key.startsWith('ff_user_') ||
+                key.startsWith('USER_')
+            )) {
+                keysToRemove.push(key);
+            }
+        }
+        keysToRemove.forEach((key) => localStorage.removeItem(key));
+        sessionStorage.clear();
+    } catch {
+        /* Ignore storage error */
+    }
+}
+
+function clearClientSessionHints() {
+    if (typeof document === 'undefined') return;
+    document.documentElement.setAttribute('data-logged-in', 'false');
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : undefined;
+    const cookiesToClear = ['ff_logged_in', 'accessToken', 'refreshToken'];
+    cookiesToClear.forEach((name) => {
+        document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;`;
+        if (hostname) {
+            document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT; domain=${hostname};`;
+        }
+    });
+}
+
+function setClientSessionHints() {
+    if (typeof document === 'undefined') return;
+    document.documentElement.setAttribute('data-logged-in', 'true');
+    const secure = typeof window !== 'undefined' && window.location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `ff_logged_in=true; path=/; max-age=${SESSION_HINT_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax${secure}`;
+}
+
+function isCachedSessionFresh(cached: CachedSession | null) {
+    return Boolean(cached && Date.now() - cached.savedAt < SESSION_REVALIDATE_MS);
+}
+
+async function writeFirebaseProfile(uid: string, profile: Profile) {
+    try {
+        const { ref, update } = await import('firebase/database');
+        const { database } = await import('@/lib/api/firebase');
+        const cleanProfile = JSON.parse(JSON.stringify({ ...profile, updatedAt: Date.now() }));
+        const profileRef = ref(database, `/users/${uid}/careerProfile`);
+        await update(profileRef, cleanProfile);
+    } catch (err) {
+        console.warn('[Firebase] Failed to write profile to RTDB:', err);
+    }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function readFirebaseProfile(uid: string): Promise<Profile | null> {
+    try {
+        const { ref, get } = await import('firebase/database');
+        const { database } = await import('@/lib/api/firebase');
+        const profileRef = ref(database, `/users/${uid}/careerProfile`);
+        const snapshot = await get(profileRef);
+        const val = snapshot.val();
+        return val ? (val as Profile) : null;
+    } catch (err) {
+        console.warn('[Firebase] Failed to read profile from RTDB:', err);
+        return null;
+    }
+}
+
+async function readFirebaseOnboarding(uid: string): Promise<{ skipUsernameSetup?: boolean } | null> {
+    try {
+        const { ref, get } = await import('firebase/database');
+        const { database } = await import('@/lib/api/firebase');
+        const onboardingRef = ref(database, `/users/${uid}/onboarding`);
+        const snapshot = await get(onboardingRef);
+        const val = snapshot.val();
+        return val ? val : null;
+    } catch (err) {
+        console.warn('[Firebase] Failed to read onboarding from RTDB:', err);
+        return null;
+    }
+}
+
+async function writeFirebaseOnboardingSkip(uid: string) {
+    try {
+        const { ref, update } = await import('firebase/database');
+        const { database } = await import('@/lib/api/firebase');
+        const onboardingRef = ref(database, `/users/${uid}/onboarding`);
+        await update(onboardingRef, { skipUsernameSetup: true, updatedAt: Date.now() });
+    } catch (err) {
+        console.warn('[Firebase] Failed to write onboarding skip to RTDB:', err);
+    }
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+    const router = useRouter();
+    const [user, setUser] = useState<User | null>(() => {
+        const cached = readCachedSession();
+        if (cached) {
+            setClientSessionHints();
+            return cached.user;
+        }
+        return null;
+    });
+    const [profile, setProfile] = useState<Profile | null>(() => {
+        const cached = readCachedSession();
+        return cached ? cached.profile : null;
+    });
+    const [isLoading, setIsLoading] = useState(() => {
+        if (typeof window === 'undefined') return true;
+        const cached = readCachedSession();
+        return !cached;
+    });
+    const [skipUsernameSetup, setSkipUsernameSetup] = useState(() => {
+        const cached = readCachedSession();
+        return cached ? !!cached.skipUsernameSetup : false;
+    });
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const [isLoggingOut, setIsLoggingOut] = useState(false);
+    const isLoggingOutRef = useRef(false);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const lastVisibilityRefreshAtRef = useRef(0);
+    const lastSuccessfulLoadAtRef = useRef(0);
+    const loadUserPromiseRef = useRef<Promise<void> | null>(null);
+
+    const logout = useCallback(async (redirectTo?: string) => {
+        if (isLoggingOutRef.current) return;
+        isLoggingOutRef.current = true;
+        setIsLoggingOut(true);
+        if (typeof window !== 'undefined') {
+            (window as Window & { __isLoggingOut?: boolean }).__isLoggingOut = true;
+        }
+
+        setUser(null);
+        setProfile(null);
+        setSkipUsernameSetup(false);
+        clearCachedSession();
+        clearUserTokens();
+        clearUnreadCache();
+        clearAllClientCaches();
+        clearClientSessionHints();
+
+        try {
+            const { auth } = await import('@/lib/api/firebase');
+            await auth.signOut();
+        } catch (err) {
+            console.warn('[Firebase] Sign out failed:', err);
+        }
+
+        try {
+            const win = window as Window & { google?: { accounts: { id: { disableAutoSelect: () => void } } } };
+            if (typeof window !== 'undefined' && win.google?.accounts?.id) {
+                win.google.accounts.id.disableAutoSelect();
+            }
+            await authApi.logout();
+        } catch { /* Ignore logout errors */ } finally {
+            if (typeof document !== 'undefined') {
+                const cookiesToClear = ['accessToken', 'refreshToken', 'ff_logged_in'];
+                cookiesToClear.forEach(name => {
+                    document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;`;
+                    document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT; domain=${window.location.hostname};`;
+                    document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT; SameSite=Lax;`;
+                });
+            }
+            router.push(isSafeInternalRedirect(redirectTo) ? (redirectTo as string) : '/login');
+        }
+    }, [router]);
+
+    const loadUser = useCallback(async (options?: { silent?: boolean; force?: boolean }) => {
+        if (isLoggingOutRef.current) return;
+
+        // Deduplicate concurrent loadUser calls - return existing promise if one is in flight
+        if (loadUserPromiseRef.current) {
+            return loadUserPromiseRef.current;
+        }
+
+        const silent = options?.silent === true;
+        const force = options?.force === true;
+        if (!silent) setIsLoading(true);
+
+        const promise = (async () => {
+            // Safety timeout: if API hangs (not down, but slow/stuck), bail out after 10s
+            // so users never get trapped on a blank loading screen when the backend is unhealthy.
+            const timeoutId = setTimeout(() => {
+                const cached = readCachedSession();
+                if (cached) {
+                    setUser(cached.user);
+                    setProfile(cached.profile);
+                    setSkipUsernameSetup(!!cached.skipUsernameSetup);
+                    setClientSessionHints();
+                } else {
+                    setUser(null);
+                    setProfile(null);
+                    clearClientSessionHints();
+                    clearCachedSession();
+                }
+                setIsLoading(false);
+            }, 10000);
+
+            try {
+                const cached = readCachedSession();
+                const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+
+                // Offline mode: Load immediately from cache
+                if (isOffline && cached) {
+                    setUser(cached.user);
+                    setProfile(cached.profile);
+                    setSkipUsernameSetup(!!cached.skipUsernameSetup);
+                    setClientSessionHints();
+                    lastSuccessfulLoadAtRef.current = cached.savedAt;
+                    if (!silent) setIsLoading(false);
+                    return;
+                }
+
+                const { auth } = await import('@/lib/api/firebase');
+                const firebaseUser = auth.currentUser;
+
+                const hasSessionCookie = typeof document !== 'undefined' && (document.cookie.includes('ff_logged_in=true') || document.cookie.includes('accessToken'));
+
+                if (firebaseUser) {
+                    if (force || !hasSessionCookie || !cached || !isCachedSessionFresh(cached)) {
+                        // Direct API fetch from backend PostgreSQL database
+                        let userResponse: User;
+                        let profileResponse: Profile | null = null;
+                        if (!hasSessionCookie) {
+                            const idToken = await firebaseUser.getIdToken(true);
+                            const response = await authApi.handshake(idToken);
+                            setUserTokens(response.accessToken, response.refreshToken);
+                            userResponse = response.user;
+                            profileResponse = response.profile as Profile;
+                        } else {
+                            const response = await authApi.me() as { user: User; profile: Profile };
+                            userResponse = response.user;
+                            profileResponse = response.profile;
+                        }
+
+                        setUser(userResponse);
+                        setProfile(profileResponse);
+                        setClientSessionHints();
+
+                        const onboarding = await readFirebaseOnboarding(firebaseUser.uid);
+                        const isSkipped = !!onboarding?.skipUsernameSetup;
+                        setSkipUsernameSetup(isSkipped);
+                        writeCachedSession(userResponse, profileResponse, isSkipped);
+                        lastSuccessfulLoadAtRef.current = Date.now();
+
+                        if (profileResponse) {
+                            void writeFirebaseProfile(firebaseUser.uid, profileResponse);
+                        }
+                    } else {
+                        // Session fresh in cache -> load direct user & profile from API/cache
+                        setUser(cached.user);
+                        setProfile(cached.profile);
+                        setSkipUsernameSetup(!!cached.skipUsernameSetup);
+                        setClientSessionHints();
+                        lastSuccessfulLoadAtRef.current = cached.savedAt;
+                    }
+                } else {
+                    // If firebaseUser is null, attempt authApi.me() or use fresh cached session
+                    if (!hasSessionCookie) {
+                        setUser(null);
+                        setProfile(null);
+                        clearCachedSession();
+                        clearClientSessionHints();
+                        if (!silent) setIsLoading(false);
+                        return;
+                    }
+                    if (!force && cached && isCachedSessionFresh(cached)) {
+                        setUser(cached.user);
+                        setProfile(cached.profile);
+                        setSkipUsernameSetup(!!cached.skipUsernameSetup);
+                        setClientSessionHints();
+                        lastSuccessfulLoadAtRef.current = cached.savedAt;
+                    } else {
+                        const response = await authApi.me() as { user: User; profile: Profile };
+                        setUser(response.user);
+                        setProfile(response.profile);
+                        setClientSessionHints();
+
+                        const isSkipped = cached ? !!cached.skipUsernameSetup : false;
+                        setSkipUsernameSetup(isSkipped);
+                        writeCachedSession(response.user, response.profile, isSkipped);
+                        lastSuccessfulLoadAtRef.current = Date.now();
+                    }
+                }
+            } catch (error: unknown) {
+                const status = (error as { statusCode?: number; status?: number })?.statusCode || (error as { status?: number })?.status;
+                const isUnauthorized = error instanceof UnauthorizedError || status === 401;
+
+                if (isUnauthorized) {
+                    clearCachedSession();
+                    clearUserTokens();
+                    clearClientSessionHints();
+                    clearAllClientCaches();
+                    setUser(null);
+                    setProfile(null);
+                    setSkipUsernameSetup(false);
+                } else {
+                    // Silently fall back to cached session on 503 / 5xx / network errors
+                    const cached = readCachedSession();
+                    if (cached) {
+                        setUser(cached.user);
+                        setProfile(cached.profile);
+                        setSkipUsernameSetup(!!cached.skipUsernameSetup);
+                        setClientSessionHints();
+                        lastSuccessfulLoadAtRef.current = cached.savedAt;
+                    } else {
+                        setUser(null);
+                        setProfile(null);
+                        setSkipUsernameSetup(false);
+                        clearClientSessionHints();
+                        clearCachedSession();
+                    }
+                }
+            } finally {
+                clearTimeout(timeoutId);
+                setIsLoading(false);
+                loadUserPromiseRef.current = null;
+            }
+        })();
+
+        loadUserPromiseRef.current = promise;
+        return promise;
+    }, []);
+
+    const updateProfileState = useCallback((updated: Partial<Profile> & { fullName?: string }, apiSyncTask?: () => Promise<unknown>) => {
+        setProfile((prev) => {
+            const next = prev ? { ...prev, ...updated } : (updated as Profile);
+            if (user) {
+                writeCachedSession(user, next, skipUsernameSetup);
+            }
+            // 2. FIREBASE RTDB SYNC
+            import('@/lib/api/firebase').then(({ auth }) => {
+                const firebaseUser = auth.currentUser;
+                if (firebaseUser) {
+                    void writeFirebaseProfile(firebaseUser.uid, next);
+                }
+            }).catch(() => {});
+            return next;
+        });
+
+        if (updated.fullName) {
+            setUser((prevUser) => {
+                if (!prevUser) return null;
+                const updatedUser = { ...prevUser, fullName: updated.fullName! };
+                setProfile((currentProf) => {
+                    if (currentProf) writeCachedSession(updatedUser, currentProf, skipUsernameSetup);
+                    return currentProf;
+                });
+                return updatedUser;
+            });
+        }
+
+        // 3. BACKGROUND / NON-BLOCKING API SYNC
+        if (apiSyncTask) {
+            apiSyncTask().catch((err) => {
+                console.warn('[ProfileSync] Background API update failed (saved locally & in Firebase):', err);
+            });
+        }
+    }, [user, skipUsernameSetup]);
+
+    useEffect(() => {
+        const handleUnauthorized = () => {
+            if (isLoggingOutRef.current) return;
+            clearCachedSession();
+            clearUserTokens();
+            clearClientSessionHints();
+            clearAllClientCaches();
+            setUser(null);
+            setProfile(null);
+            const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/jobs';
+            const loginUrl = `/login?expired=true${currentPath && currentPath !== '/login' ? `&redirect=${encodeURIComponent(currentPath)}` : ''}`;
+            window.location.replace(loginUrl);
+        };
+        window.addEventListener('fresherflow-unauthorized', handleUnauthorized);
+        return () => window.removeEventListener('fresherflow-unauthorized', handleUnauthorized);
+    }, []);
+
+    useEffect(() => {
+        if (user && !isLoggingOutRef.current && typeof document !== 'undefined' && !document.cookie.includes('ff_logged_in=true')) {
+            setClientSessionHints();
+        }
+    }, [user]);
+
+    useEffect(() => {
+        // For anonymous visitors (no session cookie and no cached session) skip
+        // Firebase auth initialization entirely. This avoids external auth network
+        // round-trips (gapi / auth iframe) that otherwise delay first paint on
+        // public pages. Returning users always have either the session cookie
+        // (setClientSessionHints) or a cached session in localStorage.
+        const hasCookie =
+            typeof document !== 'undefined' &&
+            (document.cookie.includes('ff_logged_in=true') || document.cookie.includes('accessToken'));
+        const hasCachedSession = readCachedSession() !== null;
+        if (!hasCookie && !hasCachedSession) {
+            setUser(null);
+            setProfile(null);
+            setIsLoading(false);
+            return;
+        }
+
+        let unsubscribe: (() => void) | undefined;
+        // The dynamic import resolves after this effect has usually already been
+        // torn down, so the returned cleanup almost never sees `unsubscribe`.
+        // Track cancellation and re-check it once the import lands, otherwise
+        // the listener survives unmount and StrictMode's double-mount leaves two.
+        let cancelled = false;
+        import('@/lib/api/firebase').then(({ auth }) => {
+            unsubscribe = auth.onAuthStateChanged((firebaseUser: any) => {
+                if (isLoggingOutRef.current) return;
+                const hasSessionCookie = typeof document !== 'undefined' && (document.cookie.includes('ff_logged_in=true') || document.cookie.includes('accessToken'));
+                if (!firebaseUser && !hasSessionCookie) {
+                    setUser(null);
+                    setProfile(null);
+                    setIsLoading(false);
+                    return;
+                }
+                if (firebaseUser) {
+                    loadUser({ silent: false, force: true });
+                } else {
+                    loadUser({ silent: true });
+                }
+            });
+            if (cancelled) unsubscribe();
+        });
+        return () => {
+            cancelled = true;
+            if (unsubscribe) unsubscribe();
+        };
+    }, [loadUser]);
+
+    async function sendOtp(email: string) {
+        await authApi.sendOtp(email);
+    }
+
+    async function verifyOtp(email: string, code: string, source?: string, ref?: string): Promise<User> {
+        const response = await authApi.verifyOtp(email, code, source, ref);
+        setUserTokens(response.accessToken, response.refreshToken);
+        setUser(response.user);
+        setProfile(response.profile as Profile);
+        setClientSessionHints();
+        setLastAuthMethod('otp');
+        if (typeof window !== 'undefined') {
+            (window as Window & { __isLoggingOut?: boolean }).__isLoggingOut = false;
+        }
+
+        // Firebase custom-token sign-in is best-effort: the session state above
+        // is already refreshed, so a Firebase hang/failure must never block login.
+        let isSkipped = false;
+        if (response.firebaseCustomToken) {
+            try {
+                const [{ signInWithCustomToken }, { auth }] = await Promise.all([
+                    import('firebase/auth'),
+                    import('@/lib/api/firebase'),
+                ]);
+                const signIn = signInWithCustomToken(auth, response.firebaseCustomToken);
+                const timeout = new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('firebase sign-in timed out')), 6000)
+                );
+                const userCred = await Promise.race([signIn, timeout]);
+                const onboarding = await readFirebaseOnboarding(userCred.user.uid);
+                isSkipped = !!onboarding?.skipUsernameSetup;
+            } catch (err) {
+                console.warn('[Auth] Firebase sign-in after OTP verify failed (continuing):', err);
+            }
+        }
+        setSkipUsernameSetup(isSkipped);
+        writeCachedSession(response.user, response.profile as Profile, isSkipped);
+        lastSuccessfulLoadAtRef.current = Date.now();
+        return response.user;
+    }
+
+    async function loginWithGoogle(source?: string, ref?: string): Promise<User> {
+        const { signInWithPopup, GoogleAuthProvider } = await import('firebase/auth');
+        const { auth } = await import('@/lib/api/firebase');
+        const provider = new GoogleAuthProvider();
+        
+        const userCredential = await signInWithPopup(auth, provider);
+        const idToken = await userCredential.user.getIdToken(true);
+        
+        const response = await authApi.handshake(idToken, ref);
+        setUserTokens(response.accessToken, response.refreshToken);
+        setUser(response.user);
+        setProfile(response.profile as Profile);
+        setClientSessionHints();
+        setLastAuthMethod('google');
+        
+        const onboarding = await readFirebaseOnboarding(userCredential.user.uid);
+        const isSkipped = !!onboarding?.skipUsernameSetup;
+        setSkipUsernameSetup(isSkipped);
+        writeCachedSession(response.user, response.profile as Profile, isSkipped);
+        lastSuccessfulLoadAtRef.current = Date.now();
+        return response.user;
+    }
+
+    const refreshUser = useCallback(async () => {
+        await loadUser({ silent: true, force: true });
+    }, [loadUser]);
+
+    const refreshProfile = useCallback(async () => {
+        await loadUser({ silent: true, force: true });
+    }, [loadUser]);
+
+    const forceRefreshProfile = useCallback(async () => {
+        await loadUser({ force: true });
+    }, [loadUser]);
+
+    const skipUsername = useCallback(async () => {
+        setSkipUsernameSetup(true);
+        const { auth } = await import('@/lib/api/firebase');
+        const firebaseUser = auth.currentUser;
+        if (firebaseUser) {
+            void writeFirebaseOnboardingSkip(firebaseUser.uid);
+            const currentCached = readCachedSession();
+            if (currentCached) {
+                writeCachedSession(currentCached.user, currentCached.profile, true);
+            }
+        }
+    }, []);
+
+    return (
+        <AuthContext.Provider
+            value={{ user, profile, isLoading, skipUsernameSetup, sendOtp, verifyOtp, loginWithGoogle, logout, refreshUser, refreshProfile, forceRefreshProfile, skipUsername, updateProfileState }}
+        >
+            {children}
+        </AuthContext.Provider>
+    );
+}
+
+export function useAuth() {
+    const context = useContext(AuthContext);
+    if (context === undefined) {
+        throw new Error('useAuth must be used within an AuthProvider');
+    }
+    return context;
+}

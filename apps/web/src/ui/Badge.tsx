@@ -1,0 +1,58 @@
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "@/ui/cn"
+
+const badgeVariants = cva(
+    "inline-flex items-center rounded-full border text-xs font-semibold tracking-wide capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+    {
+        variants: {
+            variant: {
+                // Informational chip (category, tag, count). A badge is NOT a selected
+                // state, so it does not get the active-surface step — it gets a
+                // neutral surface with ink text. It was `bg-primary/10
+                // text-primary`, which painted the ink colour onto a plane; the
+                // navy tint made every badge compete with actual action buttons.
+                default:
+                    "border-transparent bg-muted text-foreground hover:bg-accent",
+                secondary:
+                    "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
+                destructive:
+                    "border-transparent bg-destructive/15 text-destructive hover:bg-destructive/25",
+                outline: "text-foreground border-border/60",
+                // De-emphasised outline chip: same border as `outline`, muted
+                // label. For tags whose value is context, not the row's subject.
+                muted: "text-muted-foreground border-border/60",
+                success:
+                    "border-transparent bg-success/15 text-success hover:bg-success/25",
+                warning:
+                    "border-transparent bg-warning/15 text-warning hover:bg-warning/25",
+                discord:
+                    "border-transparent bg-brand-discord/15 text-brand-discord hover:bg-brand-discord/25",
+            },
+            size: {
+                // Dense count chip for nav badges (sidebar + admin rail).
+                // Matches the previous `px-1 py-0` call-site combo exactly.
+                xs: "px-1 py-0",
+                // Compact chip for dense rows (table cells, tab triggers).
+                sm: "px-1.5 py-0.5",
+                md: "px-2.5 py-0.5",
+            },
+        },
+        defaultVariants: {
+            variant: "default",
+            size: "md",
+        },
+    }
+)
+
+export interface BadgeProps
+    extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof badgeVariants> { }
+
+function Badge({ className, variant, size, ...props }: BadgeProps) {
+    return (
+        <div className={cn(badgeVariants({ variant, size }), className)} {...props} />
+    )
+}
+
+export { Badge, badgeVariants }

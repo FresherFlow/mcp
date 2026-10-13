@@ -1,0 +1,94 @@
+{
+    "$schema": "https://turbo.build/schema.json",
+    "ui": "tui",
+    "globalDependencies": [
+        "pnpm-lock.yaml",
+        "turbo.json"
+    ],
+    "cacheMaxAge": "7d",
+    "cacheMaxSize": "10GB",
+    "boundaries": {
+        "tags": {
+            "client-ui": {
+                "dependencies": {
+                    "deny": ["server-only"]
+                }
+            },
+            "server-only": {
+                "dependents": {
+                    "deny": ["client-ui"]
+                }
+            }
+        }
+    },
+    "globalEnv": [
+        "API_URL",
+        "NEXT_PUBLIC_API_URL",
+        "NEXT_PUBLIC_SITE_URL",
+        "ADMIN_WEB_HOST",
+        "CDN_BUILD_TOKEN",
+        "CDN_SIGNATURE_SECRET",
+        "DATABASE_URL",
+        "NODE_ENV",
+        "FIREBASE_PROJECT_ID",
+        "FIREBASE_CLIENT_EMAIL",
+        "FIREBASE_PRIVATE_KEY",
+        "REVALIDATE_SECRET_TOKEN",
+        "R2_ENDPOINT",
+        "R2_ACCESS_KEY_ID",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_BUCKET_NAME",
+        "BASIC_AUTH_USER",
+        "BASIC_AUTH_PASSWORD",
+        "WORKER_URL",
+        "WORKER_SECRET",
+        "COOKIE_DOMAIN",
+        "USER_LOGIN_HOST",
+        "JOIN_WEB_HOST",
+        "PUBLIC_WEB_HOST",
+        "APP_WEB_HOST",
+        "JWT_ACCESS_SECRET",
+        "JWT_REFRESH_SECRET"
+    ],
+    "tasks": {
+        "build": {
+            "dependsOn": [
+                "^build"
+            ],
+            "cache": false,
+            "outputs": [
+                "dist/**",
+                "!.next/cache/**",
+                ".next/**",
+                "build/**",
+                "public/sitemap*.xml",
+                "public/robots.txt"
+            ]
+        },
+        "dev": {
+            "cache": false,
+            "persistent": true
+        },
+        "lint": {},
+        "typecheck": {
+            "dependsOn": [
+                "^build"
+            ],
+            "outputs": []
+        },
+        "test": {
+            "dependsOn": [
+                "^build",
+                "db:generate"
+            ]
+        },
+        "db:generate": {
+            "outputs": [
+                "node_modules/.prisma/**"
+            ]
+        },
+        "db:push": {
+            "cache": false
+        }
+    }
+}

@@ -1,0 +1,89 @@
+import React from 'react';
+import Image from 'next/image';
+import { getResourcesFeed } from '@/features/resources/api/getResourcesFeed';
+import { notFound } from 'next/navigation';
+import { ResourceCard } from '@/features/resources/components/ResourceCard';
+import { ArrowLeft, Building } from 'lucide-react';
+import Link from 'next/link';
+
+interface CompanyResourcesPageProps {
+    params: Promise<{ id: string }>;
+}
+
+export async function generateMetadata(props: CompanyResourcesPageProps) {
+    const params = await props.params;
+    const feed = await getResourcesFeed();
+    const companyName = Object.keys(feed.companyMetadata || {}).find(
+        name => name.toLowerCase().replace(/\s+/g, '-') === params.id
+    );
+    
+    const name = companyName || 'this company';
+    const description = `Explore interview preparation guides, study materials, and career resources for ${name}.`;
+
+    return {
+        title: `${companyName || 'Company'} Prep Resources`,
+        description,
+        alternates: { canonical: `/resources/company/${params.id}` },
+        openGraph: {
+            title: `${companyName || 'Company'} Prep Resources`,
+            description,
+            url: `/resources/company/${params.id}`,
+        },
+        twitter: {
+            card: 'summary',
+            title: `${companyName || 'Company'} Prep Resources`,
+            description,
+        },
+    };
+}
+
+export default async function CompanyResourcesPage(props: CompanyResourcesPageProps) {
+    const params = await props.params;
+    const feed = await getResourcesFeed();
+    
+    // Find actual company name from feed based on slug
+    const companyName = Array.from(new Set(feed.resources.map(r => r.company).filter(Boolean))).find(
+        name => name!.toLowerCase().replace(/\s+/g, '-') === params.id
+    );
+
+    if (!companyName) {
+        notFound();
+    }
+
+    const companyResources = feed.resources.filter(r => r.company === companyName);
+    const meta = feed.companyMetadata?.[companyName];
+
+    return (
+        <div className="container max-w-5xl mx-auto py-8 px-4 space-y-8">
+            <Link href="/resources" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground font-medium transition-colors">
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back to Directory
+            </Link>
+            
+            <div className="flex items-center gap-6 mb-8">
+                <div className="relative w-20 h-20 rounded-2xl bg-accent flex items-center justify-center overflow-hidden border">
+                    {meta?.logoUrl ? (
+                        <Image src={meta.logoUrl} alt={companyName} fill className="object-contain p-2" unoptimized />
+                    ) : (
+                        <Building className="w-10 h-10 text-muted-foreground" />
+                    )}
+                </div>
+                <div>
+                    <h1 className="text-3xl font-bold tracking-tight">{companyName}</h1>
+                    <p className="text-muted-foreground font-semibold mt-1">
+                        {companyResources.length} Prep Guide{companyResources.length !== 1 ? 's' : ''}
+                    </p>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {companyResources.map(collection => (
+                    <ResourceCard 
+                        key={collection.id} 
+                        collection={collection} 
+                    />
+                ))}
+            </div>
+        </div>
+    );
+}

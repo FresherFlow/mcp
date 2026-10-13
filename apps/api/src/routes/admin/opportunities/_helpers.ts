@@ -1,0 +1,580 @@
+import { Prisma, OpportunityEventType, OpportunityStatus as DbOpportunityStatus, GovernmentLevel, VacancyNature, GovernmentApplicationStatus, EmploymentType, OpportunitySourceKind, type OpportunityCategory, type RecruitmentMethod, type Sector } from '@fresherflow/database';
+import { OpportunityStatus, EducationLevel } from '@fresherflow/types';
+import { extractDegreesFromQualifications, deriveGovtLocations } from '@fresherflow/constants';
+import { normalizeEducationBuckets } from '@fresherflow/utils';
+import { AdminOpportunityRequest } from '../../../types/admin';
+
+// ── Type normalisation ────────────────────────────────────────────────────────
+
+export type AdminStatusFilter = OpportunityStatus | 'EXPIRED' | 'DELETED' | 'LIVE';
+
+/**
+ * Map a legacy admin `type` query param onto the split dimensions.
+ *
+ * The old single enum conflated three separate concepts. The admin list filter
+ * still accepts the same URL values, so we translate them here rather than
+ * breaking the filter contract: walk-ins are a recruitment method, internships
+ * are an employment type, and the rest are categories.
+ */
+export function normalizeTypeParam(raw?: string):
+    | {
+          category?: OpportunityCategory;
+          recruitmentMethod?: RecruitmentMethod;
+          employmentType?: EmploymentType;
+          sector?: Sector;
+      }
+    | undefined {
+    if (!raw) return undefined;
+    const value = raw.toLowerCase();
+    if (value === 'job' || value === 'jobs') return { category: 'EMPLOYMENT' };
+    if (value === 'internship' || value === 'internships') return { category: 'EMPLOYMENT', employmentType: 'INTERNSHIP' };
+    if (value === 'walk-in' || value === 'walkin' || value === 'walkins' || value === 'walk-ins') {
+        return { recruitmentMethod: 'WALK_IN' };
+    }
+    if (value === 'scholarship' || value === 'scholarships') return { category: 'SCHOLARSHIP' };
+    if (value === 'competition' || value === 'competitions') return { category: 'COMPETITION' };
+    if (value === 'event' || value === 'events') return { category: 'EVENT' };
+    if (value === 'government' || value === 'govt') return { sector: 'GOVERNMENT' };
+    return undefined;
+}
+
+export function parseAdminStatusFilter(raw?: string): AdminStatusFilter | undefined {
+    if (!raw) return undefined;
+    const normalized = raw.toUpperCase();
+    if (normalized === 'EXPIRED') return 'EXPIRED';
+    if (normalized === 'DELETED') return 'DELETED';
+    if (normalized === 'LIVE') return 'LIVE';
+    if (Object.values(OpportunityStatus).includes(normalized as OpportunityStatus)) {
+        return normalized as OpportunityStatus;
+    }
+    return undefined;
+}
+
+export function parseEventType(raw?: string): OpportunityEventType {
+    const fallback = OpportunityEventType.OTHER;
+    if (!raw) return fallback;
+    const normalized = raw.toUpperCase();
+    return Object.values(OpportunityEventType).includes(normalized as OpportunityEventType)
+        ? (normalized as OpportunityEventType)
+        : fallback;
+}
+
+// ── Prisma where builders ─────────────────────────────────────────────────────
+
+export function buildExpiredWhere(now: Date): Prisma.OpportunityWhereInput {
+    return {
+        status: OpportunityStatus.PUBLISHED as unknown as DbOpportunityStatus,
+        deletedAt: null,
+        OR: [
+            { expiredAt: { not: null } },
+            { expiresAt: { lte: now } },
+        ],
+    };
+}
+
+// ── Date helpers ──────────────────────────────────────────────────────────────
+
+export function toDateOrNull(value: unknown): Date | null {
+    if (!value || typeof value !== 'string') return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed;
+}
+
+export function normalizeWalkInDates(data: AdminOpportunityRequest): Date[] {
+    const driveDetails = data?.driveDetails || {};
+    const rawDates: string[] = [];
+    if (Array.isArray(driveDetails.dates)) rawDates.push(...driveDetails.dates);
+    else if (typeof driveDetails.date === 'string') rawDates.push(driveDetails.date);
+    if (typeof data?.startDate === 'string') rawDates.push(data.startDate);
+    if (typeof data?.endDate === 'string') rawDates.push(data.endDate);
+    return rawDates.map(toDateOrNull).filter((v): v is Date => Boolean(v));
+}
+
+export function deriveOpportunityExpiryDate(data: AdminOpportunityRequest, recruitmentMethod?: RecruitmentMethod): Date | null {
+    const explicit = toDateOrNull(data?.expiresAt);
+    if (explicit) return explicit;
+    // Only a dated drive has an implicit expiry; everything else expires manually.
+    if (recruitmentMethod !== 'WALK_IN') return null;
+    const walkInDates = normalizeWalkInDates(data);
+    if (walkInDates.length === 0) return null;
+    const endDate = new Date(Math.max(...walkInDates.map(d => d.getTime())));
+    endDate.setHours(23, 59, 59, 999);
+    return endDate;
+}
+
+// ── Govt education / location extraction ─────────────────────────────────────
+
+/**
+ * Maps freetext qualification strings from qualificationDetails[]
+ * to the EducationLevel enum values used for profile matching.
+ * The MINIMUM qualification across all posts is always included so
+ * the widest possible candidate pool can see the listing.
+ */
+/** Delegates to govtTaxonomy — single source of truth in packages/constants */
+export function extractGovtDegrees(qualificationDetails: unknown[]): EducationLevel[] {
+    return extractDegreesFromQualifications(qualificationDetails);
+}
+
+/** Delegates to govtTaxonomy — single source of truth in packages/constants */
+export function extractGovtLocations(
+    details: { governmentLevel?: string; examCenters?: string[]; recruitingBody?: string } | undefined,
+    existingLocations: string[]
+): string[] {
+    return deriveGovtLocations(details?.governmentLevel, details?.examCenters, existingLocations);
+}
+
+export function normalizeEducationRequirements(
+    data: AdminOpportunityRequest,
+    govtDetails?: { qualificationDetails?: unknown[] }
+) {
+    const normalized = normalizeEducationBuckets(
+        data.allowedCourses || [],
+        data.allowedSpecializations || []
+    );
+
+    // If admin didn't provide explicit degrees AND this is a govt job,
+    // auto-extract from qualificationDetails for profile matching
+    let degrees: EducationLevel[] = Array.isArray(data.allowedDegrees) ? data.allowedDegrees as EducationLevel[] : [];
+    if (degrees.length === 0 && govtDetails?.qualificationDetails?.length) {
+        degrees = extractGovtDegrees(govtDetails.qualificationDetails);
+    }
+
+    return {
+        allowedDegrees: degrees,
+        allowedCourses: normalized.allowedCourses,
+        allowedSpecializations: normalized.allowedSpecializations,
+    };
+}
+
+
+/**
+ * Denormalised discovery columns mirroring DriveDetails onto Opportunity.
+ *
+ * `dates` is an unsized DateTime[] that Postgres cannot index for range
+ * containment, and `city` sits behind a 1:1 relation. Without these, "drives in
+ * this city in the next 7 days" and "drives near me" have to load every
+ * walk-in row into Node and filter there. `nextDriveAt` is the earliest
+ * still-future date, and `driveCity` is the drive's own city, which may differ
+ * from `Opportunity.locations`.
+ */
+export function buildDriveDiscoveryColumns(
+    driveDetails: AdminOpportunityRequest['driveDetails'] | undefined,
+    dates: Date[],
+) {
+    const now = Date.now();
+    const upcoming = dates
+        .filter((d) => d instanceof Date && !Number.isNaN(d.getTime()))
+        .filter((d) => d.getTime() >= now)
+        .sort((a, b) => a.getTime() - b.getTime());
+    const city = String(driveDetails?.city ?? '').trim();
+    return {
+        nextDriveAt: upcoming[0] ?? null,
+        driveCity: city.length > 0 ? city : null,
+    };
+}
+
+export function buildWalkInCreate(data: AdminOpportunityRequest) {
+    const driveDetails = data.driveDetails || {};
+    const dates = normalizeWalkInDates(data);
+    const venueAddress = driveDetails.venueAddress || driveDetails.venue;
+    const reportingTime = driveDetails.reportingTime || driveDetails.startTime;
+    if (!venueAddress) return undefined;
+    return {
+        create: {
+            dates,
+            dateRange: driveDetails.dateRange,
+            timeRange: driveDetails.timeRange,
+            venueAddress,
+            venueLink: driveDetails.venueLink,
+            latitude: driveDetails.latitude,
+            longitude: driveDetails.longitude,
+            clusterName: driveDetails.clusterName,
+            city: driveDetails.city,
+            landmark: driveDetails.landmark,
+            transitInfo: driveDetails.transitInfo,
+            selectionProcess: driveDetails.selectionProcess,
+            expiryDate: driveDetails.expiryDate,
+            reportingTime: reportingTime || 'Contact for timing',
+            requiredDocuments: driveDetails.requiredDocuments || [],
+            contactPerson: driveDetails.contactPerson,
+            contactPhone: driveDetails.contactPhone,
+        },
+    };
+}
+
+export function buildWalkInUpsert(data: AdminOpportunityRequest) {
+    const driveDetails = data.driveDetails || {};
+    const dates = normalizeWalkInDates(data);
+    const venueAddress = driveDetails.venueAddress || driveDetails.venue;
+    const reportingTime = driveDetails.reportingTime || driveDetails.startTime;
+    const fields = {
+        dates,
+        dateRange: driveDetails.dateRange,
+        timeRange: driveDetails.timeRange,
+        venueAddress: venueAddress!,
+        venueLink: driveDetails.venueLink,
+        latitude: driveDetails.latitude,
+        longitude: driveDetails.longitude,
+        clusterName: driveDetails.clusterName,
+        city: driveDetails.city,
+        landmark: driveDetails.landmark,
+        transitInfo: driveDetails.transitInfo,
+        selectionProcess: driveDetails.selectionProcess,
+        expiryDate: driveDetails.expiryDate,
+        reportingTime: reportingTime || 'Contact for timing',
+        requiredDocuments: driveDetails.requiredDocuments || [],
+        contactPerson: driveDetails.contactPerson,
+        contactPhone: driveDetails.contactPhone,
+    };
+    return { upsert: { create: fields, update: fields } };
+}
+
+function compactString(value: unknown) {
+    const normalized = String(value ?? '').trim();
+    return normalized.length > 0 ? normalized : undefined;
+}
+
+function compactStringArray(values: unknown) {
+    if (!Array.isArray(values)) return [];
+    return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+export function buildGovernmentTags(data: AdminOpportunityRequest) {
+    const explicitTags = compactStringArray(data.tags);
+    const details = data.governmentJobDetails;
+    if (!details && explicitTags.length === 0) return [];
+    
+    const detailTags = compactStringArray(details?.seoTags || []);
+    
+    const autoTags = compactStringArray([
+        'Government Job',
+        details?.recruitingBody || details?.organization,
+        'CENTRAL',
+        details?.applicationModes?.[0] || 'ONLINE',
+        data.jobFunction,
+    ]);
+
+    return Array.from(new Set([...explicitTags, ...detailTags, ...autoTags]));
+}
+
+export function buildGovernmentJobDetailsCreate(data: AdminOpportunityRequest) {
+    const details = data.governmentJobDetails;
+    if (!details) return undefined;
+
+    // Map legacy payload fields to new Prisma schema
+    const payload = {
+        department: compactString(details.department),
+        organization: compactString(details.organization),
+        recruitingBody: compactString(details.recruitingBody) || compactString(details.organization) || undefined,
+        officialWebsiteUrl: compactString(details.officialWebsiteUrl),
+        advertisementNumber: compactString(details.advertisementNumber),
+        postName: compactString(details.postName),
+        examName: compactString(details.examName),
+        notificationIssuedDate: compactString(details.notificationIssuedDate),
+        governmentLevel: (details.governmentLevel && Object.values(GovernmentLevel).includes(details.governmentLevel as GovernmentLevel)
+            ? (details.governmentLevel as GovernmentLevel)
+            : 'CENTRAL' as GovernmentLevel),
+        vacancyNature: (details.vacancyNature && Object.values(VacancyNature).includes(details.vacancyNature as VacancyNature)
+            ? (details.vacancyNature as VacancyNature)
+            : 'PERMANENT' as VacancyNature),
+        importantDates: details.importantDates 
+            ? (details.importantDates as unknown as Prisma.InputJsonValue) 
+            : (details.examDates 
+                ? (details.examDates as unknown as Prisma.InputJsonValue) 
+                : {
+                    applicationStartDate: details.applicationStartDate,
+                    applicationEndDate: details.applicationEndDate,
+                    examDate: details.examDate,
+                    admitCardDate: details.admitCardDate,
+                    resultDate: details.resultDate
+                } as unknown as Prisma.InputJsonValue),
+        examStages: details.examStages ? (details.examStages as unknown as Prisma.InputJsonValue) : undefined,
+        applicationFee: compactString(details.applicationFee),
+        applicationFeeDetails: details.applicationFeeDetails ? (details.applicationFeeDetails as unknown as Prisma.InputJsonValue) : undefined,
+        feeBreakdown: details.feeBreakdown ? (details.feeBreakdown as unknown as Prisma.InputJsonValue) : undefined,
+        vacancyCount: typeof details.vacancyCount === 'number' ? details.vacancyCount : undefined,
+        vacancyBreakdown: (details.vacancyBreakdown || details.vacancies) ? ((details.vacancyBreakdown || details.vacancies) as unknown as Prisma.InputJsonValue) : undefined,
+        categoryVacancies: details.categoryVacancies ? (details.categoryVacancies as unknown as Prisma.InputJsonValue) : undefined,
+        ageMin: typeof details.ageMin === 'number' ? details.ageMin : undefined,
+        ageMax: typeof details.ageMax === 'number' ? details.ageMax : undefined,
+        ageRelaxationRules: (details.ageRelaxationRules || (details.ageRelaxation ? [{ category: "General", rule: details.ageRelaxation }] : undefined)) as unknown as Prisma.InputJsonValue | undefined,
+        qualificationDetails: (details.qualificationDetails || details.eligibilityDetails) ? ((details.qualificationDetails || details.eligibilityDetails) as unknown as Prisma.InputJsonValue) : undefined,
+        physicalStandards: details.physicalStandards ? (details.physicalStandards as unknown as Prisma.InputJsonValue) : undefined,
+        cadreDetails: details.cadreDetails ? (details.cadreDetails as unknown as Prisma.InputJsonValue) : undefined,
+        postPreferences: details.postPreferences ? (details.postPreferences as unknown as Prisma.InputJsonValue) : undefined,
+        serviceBond: details.serviceBond ? (details.serviceBond as unknown as Prisma.InputJsonValue) : undefined,
+        selectionStages: (details.selectionStages && Array.isArray(details.selectionStages)) 
+            ? details.selectionStages 
+            : compactStringArray(details.selectionStages),
+        skillTests: details.skillTests ? (details.skillTests as unknown as Prisma.InputJsonValue) : undefined,
+        examPattern: details.examPattern ? (details.examPattern as unknown as Prisma.InputJsonValue) : undefined,
+        basicPay: typeof details.basicPay === 'number' ? details.basicPay : (details.basicPay ? parseInt(String(details.basicPay), 10) : undefined),
+        payLevel: compactString(details.payLevel),
+        allowances: compactStringArray(details.allowances),
+        examCenters: compactStringArray(details.examCenters),
+        requiredDocuments: compactStringArray(details.requiredDocuments),
+        requiredDocumentDetails: details.requiredDocumentDetails ? (details.requiredDocumentDetails as unknown as Prisma.InputJsonValue) : undefined,
+        reservationNotes: compactString(details.reservationNotes),
+        reservationDetails: details.reservationDetails ? (details.reservationDetails as unknown as Prisma.InputJsonValue) : undefined,
+        applicationMode: (compactString(details.applicationMode) || (compactStringArray(details.applicationModes)?.[0] || 'ONLINE')) as string,
+        importantInstructions: compactString(details.importantInstructions),
+        referenceLinks: details.referenceLinks ? (details.referenceLinks as unknown as Prisma.InputJsonValue) : undefined,
+        cutOffMarks: details.cutOffMarks ? (details.cutOffMarks as unknown as Prisma.InputJsonValue) : undefined,
+        notificationPdfUrl: compactString(details.notificationPdfUrl),
+        officialNotificationUrl: compactString(details.officialNotificationUrl),
+        admitCardUrl: compactString(details.admitCardUrl),
+        resultUrl: compactString(details.resultUrl),
+        answerKeyUrl: compactString(details.answerKeyUrl),
+        syllabusUrl: compactString(details.syllabusUrl),
+        previousPapersUrl: compactString(details.previousPapersUrl),
+        applicationStatus: (details.applicationStatus && Object.values(GovernmentApplicationStatus).includes(details.applicationStatus as GovernmentApplicationStatus)
+            ? (details.applicationStatus as GovernmentApplicationStatus)
+            : 'UPCOMING' as GovernmentApplicationStatus),
+        jobCategory: details.jobCategory || [],
+        govtCategory: compactString(details.govtCategory),
+        extraMetadata: (details.extraMetadata && typeof details.extraMetadata === 'object'
+            ? {
+                seoTags: details.seoTags,
+                ...(details.extraMetadata as Record<string, unknown>)
+              }
+            : {
+                seoTags: details.seoTags,
+            }) as unknown as Prisma.InputJsonValue,
+        officialSourceVerified: typeof details.officialSourceVerified === 'boolean' ? details.officialSourceVerified : undefined,
+        sourceLastCheckedAt: details.sourceLastCheckedAt ? new Date(details.sourceLastCheckedAt) : undefined,
+        extractionConfidence: typeof details.extractionConfidence === 'number' ? details.extractionConfidence : undefined,
+    };
+
+    const hasValue = Object.values(payload).some((value) => Array.isArray(value) ? value.length > 0 : value !== undefined);
+    return hasValue ? { create: payload } : undefined;
+}
+
+export function buildGovernmentJobDetailsUpsert(data: AdminOpportunityRequest) {
+    const built = buildGovernmentJobDetailsCreate(data);
+    if (!built) return undefined;
+    return { upsert: { create: built.create, update: built.create } };
+}
+
+// ── Phase 5: provenance / org / institution / compensation / event ──────────
+// These fields arrive on the same admin form but were previously dropped on
+// the floor by create/update. They are parsed here (never thrown) so the
+// routes stay thin and the application create use case can share the
+// duplicate/lifecycle rules without importing route code.
+
+const SOURCE_KIND_VALUES = new Set<string>(Object.values(OpportunitySourceKind));
+const COMPENSATION_TYPE_VALUES = new Set([
+    'SALARY', 'STIPEND', 'EQUITY', 'BONUS', 'COMMISSION', 'PER_DIEM', 'REIMBURSEMENT', 'OTHER',
+]);
+
+/** Extended admin payload: base form plus Phase 5 provenance/org/kind fields. */
+export type ExtendedAdminOpportunityData = AdminOpportunityRequest & {
+    sourceKind?: unknown;
+    sourceExternalId?: unknown;
+    organizationId?: unknown;
+    sector?: unknown;
+    workMode?: unknown;
+    experienceLevel?: unknown;
+    institutionIds?: unknown;
+    compensations?: unknown;
+    eventDetails?: unknown;
+    applicationDeadline?: unknown;
+    registrationDeadline?: unknown;
+    startsAt?: unknown;
+    endsAt?: unknown;
+    applicantLocationRequirements?: unknown;
+};
+
+export function parseSourceKind(raw: unknown): OpportunitySourceKind | undefined {
+    if (typeof raw !== 'string') return undefined;
+    const normalized = raw.trim().toUpperCase();
+    return SOURCE_KIND_VALUES.has(normalized) ? (normalized as OpportunitySourceKind) : undefined;
+}
+
+export function parseOrganizationId(raw: unknown): string | undefined {
+    if (typeof raw !== 'string') return undefined;
+    const trimmed = raw.trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) return undefined;
+    return trimmed;
+}
+
+/** UUID list for OpportunityInstitution targeting (college drives). */
+export function parseInstitutionIds(raw: unknown): string[] {
+    const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',') : [];
+    const out: string[] = [];
+    for (const entry of list) {
+        if (typeof entry !== 'string') continue;
+        const trimmed = entry.trim();
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed) && !out.includes(trimmed)) {
+            out.push(trimmed);
+        }
+        if (out.length >= 25) break;
+    }
+    return out;
+}
+
+function toFiniteNumber(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && /^-?\d+(\.\d+)?$/.test(value.trim())) {
+        const parsed = Number(value.trim());
+        return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    return undefined;
+}
+
+/** Nested creates for OpportunityCompensation rows (salary is the indexed projection; these are the full picture). */
+export function buildCompensationCreates(raw: unknown): Prisma.OpportunityCompensationCreateWithoutOpportunityInput[] | undefined {
+    if (!Array.isArray(raw)) return undefined;
+    const out: Prisma.OpportunityCompensationCreateWithoutOpportunityInput[] = [];
+    for (const entry of raw.slice(0, 10)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const row = entry as Record<string, unknown>;
+        const type = typeof row.type === 'string' ? row.type.trim().toUpperCase() : '';
+        if (!COMPENSATION_TYPE_VALUES.has(type)) continue;
+        out.push({
+            type: type as never,
+            minAmount: toFiniteNumber(row.minAmount) !== undefined ? Math.trunc(toFiniteNumber(row.minAmount) as number) : undefined,
+            maxAmount: toFiniteNumber(row.maxAmount) !== undefined ? Math.trunc(toFiniteNumber(row.maxAmount) as number) : undefined,
+            currency: typeof row.currency === 'string' && row.currency.trim() ? row.currency.trim().slice(0, 8).toUpperCase() : 'INR',
+            period: typeof row.period === 'string' && ['MONTHLY', 'YEARLY'].includes(row.period.trim().toUpperCase())
+                ? (row.period.trim().toUpperCase() as never)
+                : undefined,
+            note: typeof row.note === 'string' ? row.note.trim().slice(0, 500) || undefined : undefined,
+            isNegotiable: row.isNegotiable === true,
+        });
+    }
+    return out.length > 0 ? out : undefined;
+}
+
+function compactDate(value: unknown): Date | undefined {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+    if (typeof value !== 'string' || !value.trim()) return undefined;
+    const parsed = new Date(value.trim());
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+/** Nested create for EventDetails (competitions, hackathons, workshops). */
+export function buildEventDetailsCreate(raw: unknown) {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const d = raw as Record<string, unknown>;
+    const prizeAmount = toFiniteNumber(d.prizeAmount);
+    const teamSizeMin = toFiniteNumber(d.teamSizeMin);
+    const teamSizeMax = toFiniteNumber(d.teamSizeMax);
+    const payload = {
+        prizeAmount: prizeAmount !== undefined ? Math.trunc(prizeAmount) : undefined,
+        prizeCurrency: typeof d.prizeCurrency === 'string' && d.prizeCurrency.trim() ? d.prizeCurrency.trim().slice(0, 8).toUpperCase() : undefined,
+        teamSizeMin: teamSizeMin !== undefined ? Math.trunc(teamSizeMin) : undefined,
+        teamSizeMax: teamSizeMax !== undefined ? Math.trunc(teamSizeMax) : undefined,
+        isTeamEvent: d.isTeamEvent === true || teamSizeMax !== undefined,
+        participantLimit: toFiniteNumber(d.participantLimit) !== undefined ? Math.trunc(toFiniteNumber(d.participantLimit) as number) : undefined,
+        tracks: Array.isArray(d.tracks) ? d.tracks.filter((t): t is string => typeof t === 'string').map((t) => t.trim()).filter(Boolean).slice(0, 20) : undefined,
+        eligibilityNotes: typeof d.eligibilityNotes === 'string' ? d.eligibilityNotes.trim().slice(0, 5000) || undefined : undefined,
+        rulesUrl: typeof d.rulesUrl === 'string' ? d.rulesUrl.trim() || undefined : undefined,
+        registrationUrl: typeof d.registrationUrl === 'string' ? d.registrationUrl.trim() || undefined : undefined,
+        platformUrl: typeof d.platformUrl === 'string' ? d.platformUrl.trim() || undefined : undefined,
+        supportEmail: typeof d.supportEmail === 'string' ? d.supportEmail.trim() || undefined : undefined,
+        resultAnnouncementDate: compactDate(d.resultAnnouncementDate),
+        organizerName: typeof d.organizerName === 'string' ? d.organizerName.trim().slice(0, 200) || undefined : undefined,
+    };
+    const hasValue = Object.values(payload).some((v) => v !== undefined && (!Array.isArray(v) || v.length > 0));
+    return hasValue ? { create: payload } : undefined;
+}
+
+export function buildEventDetailsUpsert(raw: unknown) {
+    const built = buildEventDetailsCreate(raw);
+    if (!built) return undefined;
+    return { upsert: { create: built.create, update: built.create } };
+}
+
+// ── CSV helpers ───────────────────────────────────────────────────────────────
+
+export function toCsvValue(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    const stringValue = Array.isArray(value) ? value.join(' | ') : String(value);
+    const escaped = stringValue.replace(/"/g, '""');
+    return `"${escaped}"`;
+}
+
+// ── Alert helpers ─────────────────────────────────────────────────────────────
+
+import { sendNewJobAlerts } from '../../../infrastructure/services/alerts/notification.service';
+import { logger } from '@fresherflow/utils';
+
+export function queueNewJobAlerts(opportunityId: string) {
+    sendNewJobAlerts(opportunityId).catch((error) => {
+        logger.error('Failed to dispatch new job alerts', {
+            opportunityId,
+            error: error instanceof Error ? error.message : String(error),
+        });
+    });
+}
+
+export function buildIdOrSlugWhere(idOrSlug: string): Prisma.OpportunityWhereInput {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSlug);
+    return isUuid ? { OR: [{ id: idOrSlug }, { slug: idOrSlug }] } : { slug: idOrSlug };
+}
+
+const EMPLOYMENT_TYPE_VALUES = new Set<string>(Object.values(EmploymentType));
+
+function normaliseEmploymentTypes(input: unknown): EmploymentType[] {
+    const raw = Array.isArray(input) ? input : typeof input === 'string' ? input.split(/[,/|]/) : [];
+    const out = new Set<EmploymentType>();
+    for (const piece of raw) {
+        if (typeof piece !== 'string') continue;
+        const normalised = piece.trim().toUpperCase().replace(/[\s-]+/g, '_');
+        if (EMPLOYMENT_TYPE_VALUES.has(normalised)) out.add(normalised as EmploymentType);
+    }
+    return [...out];
+}
+
+/**
+ * Resolve the admin opportunity form into the independent taxonomy dimensions.
+ *
+ * The admin UI still sends the legacy mixed `category` ("job" / "internship" /
+ * "walk-in" / "government"), which used to map 1:1 onto a single `type` enum.
+ * The schema now splits that apart, so a form value can land in more than one
+ * dimension at once — "internship walk-in" is an employment type AND a
+ * recruitment method. Resolving them centrally keeps create, update, and the
+ * raw-submission approval path from drifting apart.
+ */
+export function resolveOpportunityDimensions(data: {
+    category?: string;
+    type?: string;
+    employmentTypes?: unknown;
+    sector?: string;
+    recruitmentMethod?: string;
+}): {
+    category: OpportunityCategory;
+    recruitmentMethod: RecruitmentMethod;
+    employmentTypes: EmploymentType[];
+    isWalkIn: boolean;
+    isGovt: boolean;
+} {
+    const raw = (data.category ?? data.type ?? 'job').toString().trim().toLowerCase();
+
+    let category: OpportunityCategory = 'EMPLOYMENT';
+    switch (raw) {
+        case 'scholarship': category = 'SCHOLARSHIP'; break;
+        case 'competition': category = 'COMPETITION'; break;
+        case 'event': category = 'EVENT'; break;
+        case 'education': case 'course': category = 'EDUCATION'; break;
+    }
+
+    const isWalkIn = raw === 'walk-in' || raw === 'walkin' || raw === 'walk_in';
+    const isGovt = raw === 'government' || raw === 'govt' || raw === 'government-job';
+
+    const employmentTypes = normaliseEmploymentTypes(data.employmentTypes);
+    // An internship is an employment type, not a category: keep the admin's
+    // intent instead of silently dropping it during the split.
+    if (raw === 'internship' && !employmentTypes.includes('INTERNSHIP')) {
+        employmentTypes.push('INTERNSHIP');
+    }
+
+    return {
+        category,
+        recruitmentMethod: isWalkIn ? 'WALK_IN' : 'REGULAR',
+        employmentTypes,
+        isWalkIn,
+        isGovt,
+    };
+}

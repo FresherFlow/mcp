@@ -1,0 +1,125 @@
+
+
+import { ADMIN_WEB_HOST } from '@/lib/utils/runtimeConfig';
+import { normalizeApiBase } from '@/lib/api/normalize-api-base';
+
+const DEFAULT_API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || '';
+
+const USER_API_URL = normalizeApiBase(process.env.USER_API_URL || process.env.NEXT_PUBLIC_USER_API_URL) || normalizeApiBase(DEFAULT_API_URL);
+const USE_SEPARATE_ADMIN_API = process.env.USE_SEPARATE_ADMIN_API === 'true' || process.env.NEXT_PUBLIC_USE_SEPARATE_ADMIN_API === 'true';
+const ADMIN_API_URL = USE_SEPARATE_ADMIN_API
+    ? (normalizeApiBase(process.env.ADMIN_API_URL || process.env.NEXT_PUBLIC_ADMIN_API_URL) || normalizeApiBase(DEFAULT_API_URL))
+    : normalizeApiBase(DEFAULT_API_URL);
+const DEFAULT_PUBLIC_REVALIDATE_SECONDS = 1800;
+
+function resolveApiBase(endpoint: string) {
+    if (endpoint.startsWith('/api/admin')) return ADMIN_API_URL;
+    return USER_API_URL;
+}
+
+function shouldBypassCache(endpoint: string, method: string) {
+    if (method !== 'GET' && method !== 'HEAD') return true;
+
+    const privatePrefixes = [
+        '/api/auth',
+        '/api/admin',
+        '/api/alerts',
+        '/api/user',
+        '/api/profile',
+        '/api/account',
+        '/api/tracker',
+        '/api/feedback',
+    ];
+
+    return privatePrefixes.some((prefix) => endpoint.startsWith(prefix));
+}
+
+ 
+export async function serverApiClient<T = any>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const method = (options.method || 'GET').toUpperCase();
+    const isPrivate = shouldBypassCache(endpoint, method);
+
+    let cookieHeader = '';
+    let host = ADMIN_WEB_HOST;
+    let proto = 'https';
+
+    // Only read cookies & request headers if this is a private/authenticated endpoint
+    // or if the request explicitly asks for credentials, to avoid dynamic server de-opt on public static/ISR routes.
+    if (isPrivate || options.credentials === 'include') {
+        try {
+            const { cookies, headers } = await import('next/headers');
+            const cookieStore = await cookies();
+            cookieHeader = cookieStore.getAll().map(c => `${c.name}=${c.value}`).join('; ');
+            const headersStore = await headers();
+            host = headersStore.get('host') || ADMIN_WEB_HOST;
+            proto = headersStore.get('x-forwarded-proto') || 'https';
+        } catch {
+            // next/headers might not be available in non-request contexts
+        }
+    }
+
+    const headersObj: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-Requested-From': 'fresherflow-web',
+        ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
+        'Origin': `${proto}://${host}`,
+        'X-Forwarded-Host': host,
+        ...(options.headers as Record<string, string> || {}),
+    };
+    const hasExplicitCacheConfig = options.cache !== undefined || options.next !== undefined;
+    const cacheOptions = hasExplicitCacheConfig
+        ? {}
+        : isPrivate
+            ? { cache: 'no-store' as const }
+            : { next: { revalidate: DEFAULT_PUBLIC_REVALIDATE_SECONDS } };
+
+    try {
+        const response = await fetch(`${resolveApiBase(endpoint)}${endpoint}`, {
+            ...options,
+            headers: headersObj,
+            ...cacheOptions,
+        });
+
+        if (!response.ok) {
+            let errorMessage = 'Request failed';
+            try {
+                const errorData = await response.json();
+                const rawMessage = errorData.error?.message || errorData.error || errorMessage;
+                errorMessage = typeof rawMessage === 'string' ? rawMessage.split('\n')[0].trim() || errorMessage : errorMessage;
+            } catch {
+                if (response.status === 429) {
+                    errorMessage = 'Too many requests. Please wait a moment and try again.';
+                } else if (response.status >= 500) {
+                    errorMessage = 'Server is temporarily unavailable. Please try again.';
+                } else {
+                    errorMessage = `Request failed (${response.status})`;
+                }
+            }
+            // Carry the HTTP status so callers can tell "not found" (render a 404)
+            // apart from transport/5xx failures (throw to the error boundary).
+            // The message stays sanitized single-line; only the status is attached.
+            const statusError = new Error(errorMessage) as Error & { status?: number };
+            statusError.status = response.status;
+            throw statusError;
+        }
+
+        // Handle 204 No Content or empty responses
+        const text = await response.text();
+        if (!text) return null as T;
+        // A 200 can still carry a non-JSON body (a proxy's HTML error page, a
+        // truncated response). Unguarded, `JSON.parse` threw a SyntaxError from
+        // deep inside the caller's render path and the `as T` never applied.
+        // Malformed now resolves to the same `null` an empty body already
+        // returns, so callers have exactly one "no data" case to handle.
+        try {
+            return JSON.parse(text) as T;
+        } catch {
+            console.error(`Server API Error (${endpoint}) - non-JSON response body`);
+            return null as T;
+        }
+    } catch (error) {
+        const clean = error instanceof Error ? error.message.split('\n')[0].trim() : 'Request failed';
+        console.error(`Server API Error (${endpoint}) - ${clean}`);
+        throw error;
+    }
+}

@@ -1,0 +1,17 @@
+{
+    "extends": [
+        "next/core-web-vitals"
+    ],
+    "plugins": [
+        "tailwindcss"
+    ],
+    "rules": {
+        "tailwindcss/no-arbitrary-value": "error",
+        "tailwindcss/classnames-order": "warn",
+        "tailwindcss/enforces-shorthand": "warn",
+        "react-hooks/set-state-in-effect": "off",
+        "react-hooks/purity": "off",
+        "react-hooks/immutability": "off",
+        "@typescript-eslint/no-explicit-any": "off"
+    }
+}

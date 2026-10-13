@@ -1,0 +1,54 @@
+{
+  "name": "@fresherflow/parser",
+  "version": "1.0.0",
+  "description": "Shared job parsing logic for FresherFlow",
+  "type": "module",
+  "main": "./dist/index.js",
+  "react-native": "./src/index.ts",
+  "source": "./src/index.ts",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./metadata": {
+      "types": "./dist/metadata.d.ts",
+      "import": "./dist/metadata.js",
+      "require": "./dist/metadata.js",
+      "default": "./dist/metadata.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc ",
+    "dev": "tsc -w",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fresherflow/constants": "workspace:*",
+    "@fresherflow/types": "workspace:*",
+    "@fresherflow/utils": "workspace:*",
+    "@types/turndown": "^5.0.6",
+    "axios": "^1.19.0",
+    "cheerio": "^1.2.0",
+    "compromise": "^14.16.0",
+    "natural": "^8.1.1",
+    "turndown": "^7.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.9.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.66.0",
+    "vitest": "^4.1.10"
+  }
+}

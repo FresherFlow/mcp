@@ -1,0 +1,180 @@
+import { ArrowDownTrayIcon, DevicePhoneMobileIcon, CheckBadgeIcon, ClockIcon, ShieldCheckIcon } from '@heroicons/react/24/outline';
+import { APP_LINKS } from '@/lib/config/links';
+import DownloadMockup from '@/features/landing/DownloadMockup';
+import { Button } from '@/ui/Button';
+
+export const metadata = {
+    title: {
+        absolute: 'Download FresherFlow Android App',
+    },
+    description: 'Find jobs. Share opportunities. Help other freshers. Get instant alerts for current openings and apply directly on the official page.',
+    alternates: {
+        canonical: '/app',
+    },
+    openGraph: {
+        type: 'website',
+        title: 'Download FresherFlow Android App',
+        description: 'Find jobs. Share opportunities. Help other freshers. Get instant alerts for current openings and apply directly on the official page.',
+        images: [
+            {
+                url: '/app/opengraph-image',
+                width: 1200,
+                height: 630,
+                type: 'image/png',
+                alt: 'Download FresherFlow Android App',
+            },
+        ],
+    },
+    twitter: {
+        card: 'summary_large_image',
+        title: 'Download FresherFlow Android App',
+        description: 'Find jobs. Share opportunities. Help other freshers. Get instant alerts for current openings and apply directly on the official page.',
+        images: ['/app/twitter-image'],
+    }
+};
+
+export default function DownloadPage() {
+    return (
+        <div className="w-full flex-1 pt-3 pb-2 px-4 sm:px-5 md:pt-4 md:pb-4 md:px-8 space-y-12 md:space-y-14 max-w-6xl mx-auto selection:bg-primary/20">
+            {/* Hero Section */}
+            <div className="flex flex-col lg:grid lg:grid-cols-2 gap-6 lg:gap-8 items-center">
+                {/* Content Column */}
+                <div className="flex flex-col space-y-6 md:space-y-7 w-full">
+                    {/* 1. Headline */}
+                    <div className="space-y-4 order-1">
+                        <div className="hidden sm:inline-flex items-center gap-2 px-3 py-1 rounded-full border border-border bg-card/60 backdrop-blur shadow-sm">
+                            <span className="text-xs font-bold uppercase tracking-widest text-primary">
+                                Verified Opportunities. Instant Alerts.
+                            </span>
+                        </div>
+                        <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-foreground leading-tight">
+                            Never Miss an <span className="text-primary">Off-Campus Deadline.</span>
+                        </h1>
+                        <p className="text-sm sm:text-base md:text-lg text-muted-foreground leading-relaxed">
+                            Get instant alerts, save jobs offline, and track every application in one place.
+                        </p>
+                        <p className="hidden sm:block text-xs font-bold text-primary tracking-wide leading-none border-l-2 border-primary/40 pl-3 select-none">
+                            Direct apply links. No junk in between.
+                        </p>
+                    </div>
+
+                    {/* Trust Badges Credibility Banner */}
+                    <div className="order-2 hidden sm:grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
+                        <div className="flex items-center gap-2.5 p-2.5 rounded-xl border border-border/50 bg-card/25">
+                            <CheckBadgeIcon className="w-4 h-4 text-success shrink-0" />
+                            <div className="flex flex-col leading-tight">
+                                <span className="text-xs font-bold text-foreground">Manually Reviewed</span>
+                                <span className="text-xs text-muted-foreground mt-0.5">Verified Sources Only</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2.5 p-2.5 rounded-xl border border-border/50 bg-card/25">
+                            <ShieldCheckIcon className="w-4 h-4 text-primary shrink-0" />
+                            <div className="flex flex-col leading-tight">
+                                <span className="text-xs font-bold text-foreground">Official Apply Links</span>
+                                <span className="text-xs text-muted-foreground mt-0.5">No Redirect Spam</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2.5 p-2.5 rounded-xl border border-border/50 bg-card/25 col-span-2 sm:col-span-1">
+                            <ClockIcon className="w-4 h-4 text-primary shrink-0" />
+                            <div className="flex flex-col leading-tight">
+                                <span className="text-xs font-bold text-foreground">Updated Daily</span>
+                                <span className="text-xs text-muted-foreground mt-0.5">Expired Posts Removed</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 2. Interactive Mockup on Mobile (Order 3 below LG, Hidden in this column on LG) */}
+                    <div className="order-3 lg:hidden w-full pt-1 pb-1 flex justify-center">
+                        <DownloadMockup />
+                    </div>
+
+                    {/* 3. Hero Buttons (Order 4 below LG - Placed at the bottom for comfortable thumb reach) */}
+                    <div className="flex flex-col w-full sm:max-w-xl order-4 items-start select-none pb-6">
+                        {/* Download CTA Buttons */}
+                        <div className="flex flex-col sm:flex-row gap-3.5 sm:gap-4 w-full">
+                            <Button
+                                variant="default"
+                                size="sm"
+                                asChild
+                                className="w-full"
+                            >
+                                <a href={APP_LINKS.androidDownload}>
+                                    <ArrowDownTrayIcon className="w-4 h-4" />
+                                    Download Android App
+                                </a>
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                disabled
+                                className="w-full"
+                            >
+                                <DevicePhoneMobileIcon className="w-4 h-4 text-foreground/75" />
+                                iOS Coming Soon
+                            </Button>
+                        </div>
+
+                        {/* Universal APK Helper Text Block (12px before helper text) */}
+                        <div className="mt-2.5 pl-1.5 select-none leading-normal text-left">
+                            <p className="text-xs text-muted-foreground/90">
+                                Older or 32-bit device?<br />
+                                <a
+                                    href="https://github.com/MukeshCheekatla/FresherFlow/releases/latest/download/FresherFlow-universal.apk"
+                                    className="text-primary hover:underline font-bold inline-flex items-center gap-0.5 mt-1"
+                                >
+                                    Try the Universal APK.
+                                    <ArrowDownTrayIcon className="w-3 h-3" />
+                                </a>
+                            </p>
+                        </div>
+
+                        {/* Version Text Block (6px before version text) */}
+                        <div className="mt-1.5 pl-1.5">
+                            <span className="text-xs text-muted-foreground/35 tracking-wider uppercase font-bold">
+                                Version {APP_LINKS.currentVersion}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Desktop Interactive Mockup (Visible only on LG+) */}
+                <div className="hidden lg:flex w-full justify-end">
+                    <DownloadMockup />
+                </div>
+            </div>
+
+            {/* How Verification Works */}
+            <div className="border-t border-border/40 pt-12 space-y-8">
+                <div className="text-center space-y-2 max-w-xl mx-auto">
+                    <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight">How our verification works.</h2>
+                    <p className="text-sm text-muted-foreground max-w-lg mx-auto">Every opportunity is reviewed before it appears on FresherFlow.</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    <div className="p-4 md:p-5 space-y-2.5 rounded-xl border border-border bg-card/45">
+                        <div className="p-2 bg-success/10 rounded-lg w-max">
+                            <ShieldCheckIcon className="w-5 h-5 text-success" />
+                        </div>
+                        <h3 className="font-bold text-sm text-foreground">1. Direct-Source Checks</h3>
+                        <p className="text-sm leading-relaxed text-muted-foreground">We trace every listing back to official career platforms like Greenhouse, Lever, Workday, or direct company pages.</p>
+                    </div>
+                    <div className="p-4 md:p-5 space-y-2.5 rounded-xl border border-border bg-card/45">
+                        <div className="p-2 bg-success/10 rounded-lg w-max">
+                            <CheckBadgeIcon className="w-5 h-5 text-success" />
+                        </div>
+                        <h3 className="font-bold text-sm text-foreground">2. Spam Filtering</h3>
+                        <p className="text-sm leading-relaxed text-muted-foreground">We aggressively filter out third-party blogs, mandatory sign-up traps, and MLM postings that clutter standard job boards.</p>
+                    </div>
+                    <div className="p-4 md:p-5 space-y-2.5 rounded-xl border border-border bg-card/45">
+                        <div className="p-2 bg-success/10 rounded-lg w-max">
+                            <ClockIcon className="w-5 h-5 text-success" />
+                        </div>
+                        <h3 className="font-bold text-sm text-foreground">3. Active Expiry Sweeps</h3>
+                        <p className="text-sm leading-relaxed text-muted-foreground">Closed or expired opportunities are removed immediately so you only see active listings.</p>
+                    </div>
+                </div>
+            </div>
+
+
+        </div>
+    );
+}

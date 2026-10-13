@@ -1,0 +1,77 @@
+import express, { Request, Response, NextFunction } from 'express';
+import prisma from '../../infrastructure/database/prisma';
+import { createRateLimiter } from '../../middleware/rateLimit';
+import { sendError, ErrorCode } from '../../middleware/errorHandler';
+import TelegramService from '../../infrastructure/services/alerts/telegram.service';
+
+const router = express.Router();
+
+const submitLimiter = createRateLimiter({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 10, // Max 10 submissions per IP per hour
+    message: 'Too many submissions. Please try again later.',
+    keyPrefix: 'rate:joblink:submit',
+});
+
+// POST /api/public/submit-job-link
+router.post('/submit-job-link', submitLimiter, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { url, source = 'anonymous' } = req.body;
+
+        if (!url || typeof url !== 'string' || !url.startsWith('http')) {
+            return sendError(res, 400, ErrorCode.VALIDATION_FAILED, 'Valid URL is required', req.requestId);
+        }
+
+        // Check if there is already a CROWDSOURCED IngestionSource
+        let ingestionSource = await prisma.ingestionSource.findFirst({
+            where: { name: 'Crowdsourced Links' }
+        });
+
+        if (!ingestionSource) {
+            ingestionSource = await prisma.ingestionSource.create({
+                data: {
+                    name: 'Crowdsourced Links',
+                    sourceType: 'CUSTOM',
+                    endpoint: 'Public Submissions',
+                    defaultCategory: 'EMPLOYMENT',
+                }
+            });
+        }
+
+        // Store the URL in RawOpportunity to be processed by admins/ParserService later
+        await prisma.rawOpportunity.create({
+            data: {
+                sourceId: ingestionSource.id as string,
+                sourceLink: url,
+                status: 'FETCHED',
+                reasonFlags: ['CROWDSOURCED', `submitted_by:${source}`],
+                rawPayload: { url, source, submittedAt: new Date().toISOString() }
+            }
+        });
+
+        // Also sync to discovered_jobs for automated bot processing
+        try {
+            await prisma.$executeRawUnsafe(
+                `INSERT INTO public.discovered_jobs (url, title, company, source, status, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, 'PENDING', NOW(), NOW())
+                 ON CONFLICT (url) DO NOTHING;`,
+                url,
+                'Community Opportunity',
+                'Community / Recruiter',
+                `community:${source}`
+            );
+        } catch {
+            // Non-fatal if discovered_jobs table is handled separately
+        }
+
+        // Notify Admin instantly via Telegram
+        void TelegramService.notifyJobSubmission(url, source);
+
+        res.status(201).json({ success: true, message: 'Thank you for your submission!' });
+    } catch (e) {
+        next(e);
+    }
+});
+
+
+export default router;

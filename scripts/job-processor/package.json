@@ -1,0 +1,29 @@
+{
+  "name": "job-processor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx --no-cache index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1102.0",
+    "@fresherflow/constants": "workspace:*",
+    "@fresherflow/parser": "workspace:*",
+    "@fresherflow/pipeline": "workspace:*",
+    "@fresherflow/plugins": "workspace:*",
+    "@fresherflow/utils": "workspace:*",
+    "@supabase/supabase-js": "^2.112.0",
+    "pg": "^8.22.0",
+    "playwright": "^1.62.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.3",
+    "tsx": "^4.23.5",
+    "typescript": "^5.7.3"
+  }
+}

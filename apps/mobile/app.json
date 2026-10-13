@@ -1,0 +1,118 @@
+{
+  "expo": {
+    "name": "FresherFlow",
+    "slug": "fresherflow",
+    "version": "1.2.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon-1024.png",
+    "userInterfaceStyle": "automatic",
+    "scheme": "fresherflow",
+    "backgroundColor": "#0D0D0D",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D0D0D"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0F1115"
+      },
+      "googleServicesFile": "./google-services.json",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "fresherflow.in",
+              "pathPrefix": "/opportunities"
+            },
+            {
+              "scheme": "https",
+              "host": "fresherflow.in",
+              "pathPrefix": "/jobs"
+            },
+            {
+              "scheme": "https",
+              "host": "fresherflow.in",
+              "pathPrefix": "/r"
+            },
+            {
+              "scheme": "https",
+              "host": "fresherflow.in",
+              "pathPrefix": "/invite"
+            },
+            {
+              "scheme": "https",
+              "host": "fresherflow.in",
+              "pathPrefix": "/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        },
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "https",
+              "host": "fresherflow-3604b.firebaseapp.com",
+              "pathPrefix": "/__/auth/links"
+            },
+            {
+              "scheme": "https",
+              "host": "fresherflow-3604b.web.app",
+              "pathPrefix": "/__/auth/links"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
+      "edgeToEdgeEnabled": true,
+      "softwareKeyboardLayoutMode": "pan"
+    },
+    "notification": {
+      "icon": "./assets/notification-icon.png",
+      "color": "#000000"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-notifications",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      [
+        "@sentry/react-native",
+        {
+          "organization": "fresherflow",
+          "project": "fresherflow-app"
+        }
+      ],
+      "expo-web-browser"
+    ],
+    "updates": {
+      "url": "https://u.expo.dev/f44bb950-d1e0-4575-b499-b1a019e1e049",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 30000
+    },
+    "runtimeVersion": "1.2.0",
+    "extra": {
+      "apiUrl": "https://api.fresherflow.in",
+      "eas": {
+        "projectId": "f44bb950-d1e0-4575-b499-b1a019e1e049"
+      }
+    },
+    "owner": "mukesh.cheekatla"
+  }
+}

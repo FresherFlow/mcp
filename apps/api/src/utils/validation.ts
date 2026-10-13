@@ -1,0 +1,716 @@
+import { z } from 'zod';
+import { OpportunityCategory, OpportunityStatus, WorkMode, EducationLevel, Availability, ActionType, FeedbackReason, SalaryPeriod, AppFeedbackType, ReservationCategory, Gender, CommentType, CommentVoteValue, JobSignalType, ReportReason } from '@fresherflow/types';
+
+const governmentApplicationFeeSchema = z.object({
+    general: z.number().nonnegative().optional(),
+    obc: z.number().nonnegative().optional(),
+    ews: z.number().nonnegative().optional(),
+    sc: z.number().nonnegative().optional(),
+    st: z.number().nonnegative().optional(),
+    pwd: z.number().nonnegative().optional(),
+    female: z.number().nonnegative().optional(),
+    other: z.record(z.string(), z.number().nonnegative()).optional(),
+});
+
+const governmentVacancySchema = z.object({
+    postName: z.string().min(1),
+    total: z.number().int().nonnegative().optional(),
+    categoryBreakup: z.record(z.string(), z.number().int().nonnegative()).optional(),
+    qualification: z.string().optional(),
+    age: z.string().optional(),
+});
+
+const governmentExamDatesSchema = z.object({
+    prelims: z.string().optional(),
+    mains: z.string().optional(),
+    skillTest: z.string().optional(),
+    interview: z.string().optional(),
+    medical: z.string().optional(),
+    documentVerification: z.string().optional(),
+    other: z.string().optional(),
+});
+
+const governmentEligibilitySchema = z.object({
+    education: z.array(z.string()).optional().default([]),
+    age: z.object({
+        min: z.number().int().nonnegative().optional(),
+        max: z.number().int().nonnegative().optional(),
+        notes: z.string().optional(),
+    }).optional(),
+    experience: z.array(z.string()).optional().default([]),
+    additional: z.array(z.string()).optional().default([]),
+});
+
+const governmentRequiredDocumentSchema = z.object({
+    name: z.string().min(1),
+    mandatory: z.boolean().optional(),
+    notes: z.string().optional(),
+});
+
+// Auth Schemas
+export const registerSchema = z.object({
+    email: z.string().email('Invalid email format'),
+    password: z.string().min(6, 'Password must be at least 6 characters'),
+    fullName: z.string().min(1, 'Full name is required')
+});
+
+export const loginSchema = z.object({
+    email: z.string().email('Invalid email format'),
+    password: z.string().min(1, 'Password is required')
+});
+
+export const refreshTokenSchema = z.object({
+    refreshToken: z.string().min(1, 'Refresh token is required')
+});
+
+export const sendOtpSchema = z.object({
+    email: z.string().email('Invalid email format')
+});
+
+export const verifyOtpSchema = z.object({
+    email: z.string().email('Invalid email format'),
+    code: z.string().length(6, 'Verification code must be 6 digits'),
+    firebaseUid: z.string().optional(),
+    source: z.string().optional(),
+    ref: z.string().optional()
+});
+
+export const googleAuthSchema = z.object({
+    token: z.string().min(1, 'Token is required'),
+    firebaseUid: z.string().optional(),
+    source: z.string().optional(),
+    ref: z.string().optional()
+});
+
+// Profile Schemas
+export const profileUpdateSchema = z.object({
+    fullName: z.string().optional(),
+    expectedCtc: z.number().int().min(0).max(200, 'CTC expectation must be between 0 and 200 LPA').nullable().optional(),
+    resumeUrl: z.string().url().max(2000).nullable().optional().or(z.literal('')),
+    willingToRelocate: z.boolean().nullable().optional(),
+    headline: z.string().max(120, 'Headline must be at most 120 characters').nullable().optional(),
+    about: z.string().nullable().optional(),
+    githubUrl: z.string().url().nullable().optional().or(z.literal('')),
+    linkedinUrl: z.string().url().nullable().optional().or(z.literal('')),
+    portfolioUrl: z.string().url().nullable().optional().or(z.literal('')),
+    avatarUrl: z.string().url().nullable().optional().or(z.literal('')),
+    githubPinnedRepos: z.any().nullable().optional(),
+    openToRecruiters: z.boolean().nullable().optional(),
+    profilePublic: z.boolean().nullable().optional(),
+    visibility: z.enum(['PUBLIC', 'UNLISTED', 'PRIVATE']).nullable().optional(),
+    educationLevel: z.nativeEnum(EducationLevel).optional(),
+    tenthYear: z.number().int().optional(),
+    twelfthYear: z.number().int().optional(),
+    gradCourse: z.string().optional(),
+    gradSpecialization: z.string().optional(),
+    gradYear: z.number().int().optional(),
+    collegeId: z.string().nullable().optional(),
+    collegeName: z.string().nullable().optional(),
+    collegeState: z.string().nullable().optional(),
+    pgCourse: z.string().optional(),
+    pgSpecialization: z.string().optional(),
+    pgYear: z.number().int().optional(),
+    interestedIn: z.array(z.nativeEnum(OpportunityCategory)).optional(),
+    preferredCities: z.array(z.string()).optional(),
+    workModes: z.array(z.nativeEnum(WorkMode)).optional(),
+    availability: z.nativeEnum(Availability).optional(),
+    skills: z.array(z.string()).max(10, 'Maximum 10 skills allowed').optional(),
+    dob: z.string().nullable().optional(),
+    gender: z.nativeEnum(Gender).nullable().optional(),
+    category: z.nativeEnum(ReservationCategory).nullable().optional(),
+    isPwBD: z.boolean().nullable().optional(),
+    isExServicemen: z.boolean().nullable().optional(),
+    homeState: z.string().nullable().optional(),
+});
+
+export const educationSchema = z.object({
+    educationLevel: z.nativeEnum(EducationLevel),
+
+    // 10th Details
+    tenthYear: z.number().int().min(1000, 'Year must be 4 digits').max(9999, 'Year must be 4 digits'),
+
+    // 12th Details — not applicable to 10th passouts
+    twelfthYear: z.number().int().min(1000, 'Year must be 4 digits').max(9999, 'Year must be 4 digits').optional(),
+
+    // Graduation Details — only for DIPLOMA/DEGREE/PG levels
+    gradCourse: z.string().min(1, 'Course name is required').optional(),
+    gradSpecialization: z.string().min(1, 'Specialization is required').optional(),
+    gradYear: z.number().int().min(1000, 'Year must be 4 digits').max(9999, 'Year must be 4 digits').optional(),
+    collegeId: z.string().optional().nullable(),
+    collegeName: z.string().optional().nullable(),
+    collegeState: z.string().optional().nullable(),
+
+    // PG (Optional)
+    pgCourse: z.string().optional(),
+    pgSpecialization: z.string().optional(),
+    pgYear: z.number().int().min(1000, 'Year must be 4 digits').max(9999, 'Year must be 4 digits').optional(),
+
+    // Government Job Eligibility Fields
+    dob: z.preprocess((val) => {
+        if (typeof val === 'string' && val.trim() !== '') {
+            const d = new Date(val);
+            if (!isNaN(d.getTime())) return d;
+        }
+        return val === '' ? undefined : val;
+    }, z.date().optional().nullable()),
+    gender: z.nativeEnum(Gender).optional().nullable(),
+    category: z.nativeEnum(ReservationCategory).optional().nullable(),
+    isPwBD: z.boolean().optional().nullable(),
+    isExServicemen: z.boolean().optional().nullable(),
+    homeState: z.string().optional().nullable()
+}).superRefine((val, ctx) => {
+    // Required fields follow the highest level so lower levels are never
+    // forced to invent entries for schooling they don't have.
+    if (val.educationLevel !== 'TENTH' && val.twelfthYear === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['twelfthYear'], message: '12th passout year is required' });
+    }
+    if (['DIPLOMA', 'DEGREE', 'PG'].includes(val.educationLevel)) {
+        if (!val.gradCourse) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gradCourse'], message: 'Course name is required' });
+        if (!val.gradSpecialization) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gradSpecialization'], message: 'Specialization is required' });
+        if (val.gradYear === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gradYear'], message: 'Graduation year is required' });
+    }
+});
+
+export const preferencesSchema = z.object({
+    interestedIn: z.array(z.nativeEnum(OpportunityCategory)).optional().default([]),
+    preferredCities: z.array(z.string()).max(5, 'Select up to 5 cities').optional().default([]),
+    workModes: z.array(z.nativeEnum(WorkMode)).optional().default([])
+});
+
+export const readinessSchema = z.object({
+    availability: z.nativeEnum(Availability),
+    skills: z.array(z.string()).min(1, 'Add at least one skill').max(10, 'Maximum 10 skills allowed'),
+    expectedCtc: z.number().int().min(0).max(200, 'CTC expectation must be between 0 and 200 LPA').nullable().optional(),
+    resumeUrl: z.string().url().max(2000).nullable().optional().or(z.literal('')),
+    willingToRelocate: z.boolean().nullable().optional()
+});
+
+// Government-eligibility demographics (Profile.dob/gender/category/isPwBD/
+// isExServicemen/homeState). All fields optional: this is a partial editor.
+export const demographicsSchema = z.object({
+    dob: z.string().datetime({ offset: true }).or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')).nullable().optional(),
+    gender: z.nativeEnum(Gender).nullable().optional(),
+    category: z.nativeEnum(ReservationCategory).nullable().optional(),
+    isPwBD: z.boolean().nullable().optional(),
+    isExServicemen: z.boolean().nullable().optional(),
+    homeState: z.string().trim().max(100).nullable().optional()
+});
+
+export const introRequestSchema = z.object({
+    candidateId: z.string().min(1),
+    message: z.string().max(1000).optional(),
+    recruiterName: z.string().min(1).max(120).optional(),
+    recruiterCompany: z.string().min(1).max(120).optional(),
+    recruiterEmail: z.string().email().optional(),
+    recruiterPhone: z.string().max(20).optional()
+});
+
+export const publicProfileViewSchema = z.object({
+    viewerSession: z.string().max(100).optional()
+});
+
+const applicationDetailsSchema = z.object({
+    method: z.enum(['DIRECT', 'FORM', 'ASSESSMENT']).optional(),
+    platform: z.string().optional(),
+    estimatedMinutes: z.number().int().positive().optional(),
+    requiredItems: z.array(z.string()).optional()
+});
+
+// Admin Schemas
+export const opportunitySchema = z.object({
+    status: z.nativeEnum(OpportunityStatus).optional(),
+    category: z.enum(['job', 'internship', 'walk-in']).optional(), // Frontend alias
+    // Sent by the admin form and read by `routes/admin/opportunities/create.ts`
+    // (`sanitizeCustomSlug`) and `application/opportunity/create.ts`, but this
+    // schema is a closed `z.object` and `validate.ts` replaces the body with its
+    // output — so an admin-typed slug was silently dropped before either handler
+    // could read it.
+    customSlug: z.string().max(200).nullable().optional(),
+    // Read at `application/opportunity/create.ts:113`; without it every listing
+    // saved as PRIVATE no matter what the form said.
+    sector: z.string().nullable().optional(),
+    rawOpportunityId: z.string().optional(),
+    applicationDetails: applicationDetailsSchema.nullable().optional(),
+
+    title: z.string().min(1, 'Title is required'),
+    company: z.string().min(1, 'Company is required'),
+    companyWebsite: z.string().url().nullable().optional().or(z.string().length(0).nullable().optional()),
+    companyLogoUrl: z.string().url().nullable().optional().or(z.string().length(0).nullable().optional()),
+    description: z.string().min(10, 'Description must be at least 10 characters').nullable().optional(),
+
+    // Core Filters
+    allowedDegrees: z.array(z.nativeEnum(EducationLevel)).optional().default([]),
+    allowedCourses: z.array(z.string()).optional().default([]),
+    allowedSpecializations: z.array(z.string()).optional().default([]),
+    allowedPassoutYears: z.array(z.number().int()).optional().default([]),
+    // Both are written by the form's batch-range inputs and read by the public
+    // filters (`application/opportunity/filters.ts:750-755`), so dropping them
+    // here made an admin-set batch range disappear after save.
+    passoutYearMin: z.number().int().nullable().optional(),
+    passoutYearMax: z.number().int().nullable().optional(),
+    // Validated against the enum rather than `z.array(z.string())`: the column is
+    // a Prisma `Availability[]`, so free text would reach the database and fail
+    // as a 500 instead of a clean 400.
+    allowedAvailability: z.array(z.nativeEnum(Availability)).nullable().optional().default([]),
+    requiredSkills: z.array(z.string()).default([]),
+    locations: z.array(z.string()).optional().default([]),
+
+    // Job/Internship Fields
+    workMode: z.nativeEnum(WorkMode).nullable().optional(),
+    salaryMin: z.number().nullable().optional(), // Legacy
+    salaryMax: z.number().nullable().optional(), // Legacy
+    salaryRange: z.string().nullable().optional(), // New
+    stipend: z.string().nullable().optional(),     // New
+    salaryPeriod: z.nativeEnum(SalaryPeriod).nullable().optional(),
+    incentives: z.string().nullable().optional(),
+    jobFunction: z.string().nullable().optional(),
+    selectionProcess: z.string().nullable().optional(),
+    notesHighlights: z.string().nullable().optional(),
+    experienceMin: z.number().nullable().optional(),
+    experienceMax: z.number().nullable().optional(),
+    employmentTypes: z.string().nullable().optional(), // New
+    tags: z.array(z.string()).optional().default([]),
+    sourceLink: z.string().url().nullable().optional().or(z.string().length(0).nullable().optional()),
+    applyLink: z.string().url().nullable().optional().or(z.string().length(0).nullable().optional()),
+
+    expiresAt: z.string().nullable().optional(),
+    governmentJobDetails: z.object({
+        department: z.string().nullable().optional(),
+        organization: z.string().nullable().optional(),
+        recruitingBody: z.string().nullable().optional(),
+        officialWebsiteUrl: z.string().url().or(z.string().length(0)).nullable().optional(),
+        officialNotificationUrl: z.string().url().or(z.string().length(0)).nullable().optional(),
+        advertisementNumber: z.string().nullable().optional(),
+        postName: z.string().nullable().optional(),
+        applicationModes: z.array(z.string()).nullable().optional().default([]),
+        vacancyCount: z.number().int().nonnegative().nullable().optional(),
+        vacancies: z.array(governmentVacancySchema).nullable().optional().default([]),
+        applicationFee: z.string().nullable().optional(),
+        applicationFeeDetails: governmentApplicationFeeSchema.nullable().optional(),
+        ageMin: z.number().int().nonnegative().nullable().optional(),
+        ageMax: z.number().int().nonnegative().nullable().optional(),
+        ageRelaxation: z.string().nullable().optional(),
+        eligibilityDetails: governmentEligibilitySchema.nullable().optional(),
+        reservationNotes: z.string().nullable().optional(),
+        importantInstructions: z.string().nullable().optional(),
+        applicationStartDate: z.string().nullable().optional(),
+        applicationEndDate: z.string().nullable().optional(),
+        examDate: z.string().nullable().optional(),
+        examDates: governmentExamDatesSchema.nullable().optional(),
+        admitCardDate: z.string().nullable().optional(),
+        resultDate: z.string().nullable().optional(),
+        selectionStages: z.array(z.string()).nullable().optional().default([]),
+        requiredDocuments: z.array(z.string()).nullable().optional().default([]),
+        requiredDocumentDetails: z.array(governmentRequiredDocumentSchema).nullable().optional().default([]),
+        seoTags: z.array(z.string()).nullable().optional().default([]),
+        examCenters: z.array(z.string()).nullable().optional().default([]),
+        examPattern: z.any().nullable().optional(),
+        skillTests: z.any().nullable().optional(),
+        examStages: z.any().nullable().optional(),
+        importantDates: z.any().nullable().optional(),
+        qualificationDetails: z.any().nullable().optional(),
+        physicalStandards: z.any().nullable().optional(),
+        extraMetadata: z.any().nullable().optional(),
+        feeBreakdown: z.any().nullable().optional(),
+        ageRelaxationRules: z.any().nullable().optional(),
+        notificationPdfUrl: z.string().url().or(z.string().length(0)).nullable().optional(),
+        admitCardUrl: z.string().url().or(z.string().length(0)).nullable().optional(),
+        resultUrl: z.string().url().or(z.string().length(0)).nullable().optional(),
+        answerKeyUrl: z.string().url().or(z.string().length(0)).nullable().optional(),
+        syllabusUrl: z.string().url().or(z.string().length(0)).nullable().optional(),
+        previousPapersUrl: z.string().url().or(z.string().length(0)).nullable().optional(),
+        vacancyBreakdown: z.any().nullable().optional(),
+        governmentLevel: z.string().nullable().optional(),
+        vacancyNature: z.string().nullable().optional(),
+        applicationStatus: z.string().nullable().optional(),
+        jobCategory: z.array(z.string()).nullable().optional(),
+        govtCategory: z.string().nullable().optional(),
+        applicationMode: z.string().nullable().optional(),
+        officialSourceVerified: z.boolean().nullable().optional(),
+        sourceLastCheckedAt: z.string().nullable().optional(),
+        extractionConfidence: z.number().nullable().optional(),
+        examName: z.string().nullable().optional(),
+        notificationIssuedDate: z.string().nullable().optional(),
+        basicPay: z.number().int().nonnegative().nullable().optional(),
+        payLevel: z.string().nullable().optional(),
+        allowances: z.array(z.string()).nullable().optional().default([]),
+        categoryVacancies: z.any().nullable().optional(),
+        cadreDetails: z.any().nullable().optional(),
+        postPreferences: z.any().nullable().optional(),
+        serviceBond: z.any().nullable().optional(),
+        reservationDetails: z.any().nullable().optional(),
+        referenceLinks: z.any().nullable().optional(),
+        cutOffMarks: z.any().nullable().optional(),
+    }).nullable().optional(),
+
+    // Walk-in specific (Simplified)
+    driveDetails: z.object({
+        date: z.string().optional(), // Frontend sends singular date often
+        dates: z.array(z.string()).optional(), // Backend expects array
+        dateRange: z.string().optional(), // New: "2nd Feb - 6th Feb"
+        timeRange: z.string().optional(), // New: "11:00 AM - 1:00 PM"
+        venueAddress: z.string().optional(),
+        venue: z.string().optional(), // Frontend alias
+        venueLink: z.string().optional(), // New: Google Maps URL
+        // Location and logistics. These existed on DriveDetails but were
+        // rejected by the schema, so an admin could never save a drive's city,
+        // coordinates or landmark — which is why the map and city pages had
+        // nothing to show for admin-entered drives.
+        latitude: z.number().min(-90).max(90).optional().nullable(),
+        longitude: z.number().min(-180).max(180).optional().nullable(),
+        clusterName: z.string().optional().nullable(),
+        city: z.string().optional().nullable(),
+        landmark: z.string().optional().nullable(),
+        transitInfo: z.string().optional().nullable(),
+        selectionProcess: z.string().optional().nullable(),
+        expiryDate: z.string().optional().nullable(),
+        reportingTime: z.string().optional(),
+        startTime: z.string().optional(), // Frontend alias for reportingTime
+        endTime: z.string().optional(),
+        requiredDocuments: z.array(z.string()).optional(),
+        contactPerson: z.string().optional(),
+        contactPhone: z.string().optional()
+    }).optional()
+});
+
+export const opportunitySubmitSchema = z.object({
+    title: z.string({ error: 'Title is required' }).min(1, 'Title is required'),
+    company: z.string({ error: 'Company is required' }).min(1, 'Company is required'),
+    companyWebsite: z.string().url().nullable().optional().or(z.string().length(0).nullable().optional()),
+    companyLogoUrl: z.string().url().nullable().optional().or(z.string().length(0).nullable().optional()),
+    description: z.string().optional().nullable(),
+    category: z.nativeEnum(OpportunityCategory).optional().default(OpportunityCategory.EMPLOYMENT),
+    status: z.nativeEnum(OpportunityStatus).optional().default(OpportunityStatus.DRAFT),
+    locations: z.array(z.string()).optional().default([]),
+    requiredSkills: z.array(z.string()).optional().default([]),
+    skills: z.array(z.string()).optional(), // fallback alias
+    allowedDegrees: z.array(z.nativeEnum(EducationLevel)).optional().default([]),
+    allowedCourses: z.array(z.string()).optional().default([]),
+    allowedSpecializations: z.array(z.string()).optional().default([]),
+    allowedPassoutYears: z.array(z.number().int()).optional().default([]),
+    workMode: z.nativeEnum(WorkMode).nullable().optional(),
+    salaryRange: z.string().nullable().optional(),
+    salaryMin: z.number().nullable().optional(),
+    salaryMax: z.number().nullable().optional(),
+    salaryPeriod: z.nativeEnum(SalaryPeriod).optional().default(SalaryPeriod.YEARLY),
+    stipend: z.string().nullable().optional(),
+    employmentTypes: z.string().nullable().optional(),
+    applyLink: z.string().url().nullable().optional().or(z.string().length(0).nullable().optional()),
+    sourceLink: z.string().url().nullable().optional().or(z.string().length(0).nullable().optional()),
+    applicationDetails: applicationDetailsSchema.nullable().optional(),
+    
+    // Walk-in specific
+    dates: z.array(z.string()).optional().default([]),
+    dateRange: z.string().optional().nullable(),
+    timeRange: z.string().optional().nullable(),
+    venueAddress: z.string().optional().nullable(),
+    venueLink: z.string().url().or(z.string().length(0)).nullable().optional(),
+    reportingTime: z.string().optional().nullable(),
+    experienceMin: z.number().nullable().optional(),
+    experienceMax: z.number().nullable().optional(),
+    structuredLocations: z.any().nullable().optional(),
+    jobFunction: z.string().nullable().optional(),
+    incentives: z.string().nullable().optional(),
+    selectionProcess: z.string().nullable().optional(),
+    notesHighlights: z.string().nullable().optional(),
+});
+
+// User Action Schemas
+export const userActionSchema = z.object({
+    actionType: z.nativeEnum(ActionType)
+});
+
+export const feedbackSchema = z.object({
+    reason: z.nativeEnum(FeedbackReason),
+    description: z.string().max(1000).optional()
+});
+
+export const appFeedbackSchema = z.object({
+    type: z.nativeEnum(AppFeedbackType),
+    rating: z.number().int().min(1).max(5).optional(),
+    message: z.string().min(10).max(2000),
+    pageUrl: z.string().max(500).optional()
+});
+
+export const alertPreferencesSchema = z.object({
+    enabled: z.boolean().optional(),
+    emailEnabled: z.boolean().optional(),
+    dailyDigest: z.boolean().optional(),
+    closingSoon: z.boolean().optional(),
+    minRelevanceScore: z.number().int().min(0).max(100).optional(),
+    preferredHour: z.number().int().min(0).max(23).optional(),
+    timezone: z.string().min(1).max(64).optional()
+});
+
+export const pushSubscriptionSchema = z.object({
+    subscription: z.object({
+        endpoint: z.string().url('Invalid push subscription endpoint'),
+        keys: z.object({
+            p256dh: z.string().min(1, 'Missing p256dh key'),
+            auth: z.string().min(1, 'Missing auth key'),
+        }),
+    }),
+});
+
+export const usernameSchema = z.string()
+    .min(3, 'Username must be at least 3 characters')
+    .max(20, 'Username must be at most 20 characters')
+    .regex(/^[a-z0-9_]+$/, 'Usernames can only contain lowercase letters, numbers, and underscores');
+
+export const contributionSchema = z.object({
+    url: z.string().url('Valid URL is required').optional(),
+    referral: z.object({
+        contact: z.string().min(1, 'Contact info is required'),
+        description: z.string().min(10, 'Description must be at least 10 characters'),
+        company: z.string().min(1, 'Company name is required'),
+        companyUrl: z.string().url().optional().or(z.string().length(0)),
+    }).optional()
+}).refine(data => data.url || data.referral, {
+    message: "Either a URL or a referral must be provided"
+});
+
+// Community schemas (plan 23 §4)
+export const commentCreateSchema = z.object({
+    text: z.string().trim().min(1, 'Comment text is required').max(500, 'Comment text must be at most 500 characters'),
+    commentType: z.nativeEnum(CommentType).optional().default(CommentType.GENERAL),
+    parentCommentId: z.string().min(1).max(64).optional(),
+});
+
+
+export const commentVoteSchema = z.object({
+    value: z.nativeEnum(CommentVoteValue),
+});
+
+export const signalToggleSchema = z.object({
+    signalType: z.nativeEnum(JobSignalType),
+});
+
+export const submitJobSchema = z.object({
+    sourceUrl: z.string().trim().url('A valid source URL is required').max(2000),
+    applyUrl: z.string().trim().url('A valid apply URL is required').max(2000).optional(),
+    title: z.string().trim().min(1, 'Title is required').max(200),
+    company: z.string().trim().max(200).optional(),
+    description: z.string().trim().max(20000).optional(),
+    // Optional detail fields (progressive disclosure on /contribute)
+    companyWebsite: z
+        .union([z.string().trim().url('Enter a valid URL'), z.literal('')])
+        .optional(),
+    companyLogoUrl: z
+        .union([z.string().trim().url('Enter a valid URL'), z.literal('')])
+        .nullable()
+        .optional(),
+    category: z.nativeEnum(OpportunityCategory).optional(),
+    locations: z.array(z.string().trim().min(1).max(120)).max(15).optional(),
+    workMode: z.nativeEnum(WorkMode).nullable().optional(),
+    salaryRange: z.string().trim().max(60).nullable().optional(),
+    salaryMin: z.number().int().min(0).nullable().optional(),
+    salaryMax: z.number().int().min(0).nullable().optional(),
+    salaryPeriod: z.nativeEnum(SalaryPeriod).optional(),
+    stipend: z.string().trim().max(120).nullable().optional(),
+    employmentTypes: z.string().trim().max(80).nullable().optional(),
+    experienceMin: z.number().min(0).max(30).nullable().optional(),
+    experienceMax: z.number().min(0).max(30).nullable().optional(),
+    requiredSkills: z.array(z.string().trim().min(1).max(60)).max(30).optional(),
+    tags: z.array(z.string().trim().min(1).max(60)).max(20).optional(),
+    allowedDegrees: z.array(z.nativeEnum(EducationLevel)).optional(),
+    allowedCourses: z.array(z.string().trim().min(1).max(120)).max(20).optional(),
+    allowedSpecializations: z.array(z.string().trim().min(1).max(120)).max(20).optional(),
+    allowedPassoutYears: z.array(z.number().int().min(1990).max(2100)).max(15).optional(),
+    jobFunction: z.string().trim().max(120).nullable().optional(),
+    incentives: z.string().trim().max(500).nullable().optional(),
+    selectionProcess: z.string().trim().max(5000).nullable().optional(),
+    notesHighlights: z.string().trim().max(5000).nullable().optional(),
+    expiresAt: z.string().trim().max(64).nullable().optional(),
+    applicationDetails: applicationDetailsSchema.nullable().optional(),
+    // Walk-in details (only used when type is WALKIN)
+    dates: z.array(z.string().trim().min(1).max(64)).max(10).optional(),
+    dateRange: z.string().trim().max(120).nullable().optional(),
+    timeRange: z.string().trim().max(120).nullable().optional(),
+    venueAddress: z.string().trim().max(2000).nullable().optional(),
+    venueLink: z.union([z.string().trim().url('Enter a valid URL'), z.literal('')]).nullable().optional(),
+    reportingTime: z.string().trim().max(120).nullable().optional(),
+    // Guest attribution (optional when not logged in)
+    contact: z.string().trim().max(200).nullable().optional(),
+    submitterName: z.string().trim().max(120).nullable().optional(),
+    // Honeypot - must stay empty
+    website: z.string().max(0, 'Invalid submission').optional(),
+});
+
+export const ingestJobSchema = opportunitySubmitSchema
+    .extend({
+        sourceUrl: z.string().trim().url('A valid source URL is required').max(2000).optional(),
+        applyUrl: z.string().trim().url('A valid apply URL is required').max(2000).optional(),
+        tags: z.array(z.string().trim().min(1).max(60)).max(20).optional().default([]),
+        notesHighlights: z.string().trim().max(5000).nullable().optional(),
+        idempotencyKey: z.string().trim().min(1).max(128).optional(),
+        contact: z.string().trim().max(200).nullable().optional(),
+        submitterName: z.string().trim().max(120).nullable().optional(),
+    })
+    .superRefine((data, ctx) => {
+        const source = data.sourceLink || data.sourceUrl;
+        const apply = data.applyLink || data.applyUrl;
+        if (!source && !apply) {
+            ctx.addIssue({ code: 'custom', path: ['sourceLink'], message: 'At least one of sourceLink (or sourceUrl) or applyLink (or applyUrl) is required' });
+        }
+    });
+
+export type IngestJobInput = z.infer<typeof ingestJobSchema>;
+
+export const reportCreateSchema = z.object({
+    reason: z.nativeEnum(ReportReason),
+    message: z.string().trim().max(1000).optional(),
+});
+
+/**
+ * MCP submission schema (plan 23 §9).
+ * Anonymous, strictly-typed, no arbitrary-object payload. Every field is
+ * validated and length-capped so ChatGPT cannot flood or shape the DB.
+ * URL fields are treated as DATA only — the server never fetches them.
+ */
+export const mcpSubmitOpportunitySchema = z.object({
+    title: z.string().trim().min(1, 'title is required').max(200),
+    companyName: z.string().trim().min(1, 'companyName is required').max(200),
+    jobUrl: z.string().trim().url('jobUrl must be a valid https URL').max(2000)
+        .refine((u) => u.startsWith('https://'), 'jobUrl must use https'),
+    location: z.string().trim().max(120).optional(),
+    // Tool schema sends `employmentType` (singular); accept both spellings so
+    // the value is never silently dropped (zod strips unknown keys).
+    employmentType: z.string().trim().max(80).optional(),
+    employmentTypes: z.string().trim().max(80).optional(),
+    // Posting kind: job (default), internship, walkin (dated drive with
+    // venue/dates), government (public-sector job).
+    category: z.enum(['job', 'internship', 'walkin', 'government']).optional(),
+    dates: z.array(z.string().trim().max(40)).max(10).optional(),
+    dateRange: z.string().trim().max(120).optional(),
+    timeRange: z.string().trim().max(120).optional(),
+    venueAddress: z.string().trim().max(500).optional(),
+    salary: z.string().trim().max(60).optional(),
+    description: z.string().trim().max(5000).optional(),
+    eligibility: z.string().trim().max(2000).optional(),
+    sourceUrl: z.string().trim().url('sourceUrl must be a valid URL').max(2000).optional(),
+    contactEmail: z.string().trim().email('contactEmail must be valid').max(200).optional(),
+}).superRefine((data, ctx) => {
+    if (data.sourceUrl && !data.sourceUrl.startsWith('https://')) {
+        ctx.addIssue({ code: 'custom', path: ['sourceUrl'], message: 'sourceUrl must use https' });
+    }
+    // Never trust the URL as a server-side fetch target — it is stored only.
+
+    // Test payloads must never enter the moderation queue. This shape is what
+    // leaked fixture rows into a shared database once: MCP submission tests
+    // named "TEST-MCP … (DELETE ME)" and TestCo*/TestGovt companies that were
+    // then approved. Field lengths are capped above, so these patterns only
+    // ever run on ≤200-char values.
+    if (looksLikeTestOpportunity(data.title, data.companyName)) {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['title'],
+            message:
+                'This looks like test data (TEST-MCP / DELETE ME / TestCo / TestGovt) and is rejected by the submission pipeline.',
+        });
+    }
+});
+
+export type McpSubmitOpportunityInput = z.infer<typeof mcpSubmitOpportunitySchema>;
+
+/**
+ * Shapes that only test fixtures use — deliberately narrow so real companies
+ * like "Testbook" are unaffected. The schema's length caps bound the input
+ * these patterns ever see.
+ */
+const TEST_OPPORTUNITY_PATTERNS = [
+    /test[-\s_]?mcp/i,
+    /delete\s*me/i,
+    /do\s*not\s*publish/i,
+    /^testco(\s|$)/i,
+    /^testgovt(\s|$)/i,
+] as const;
+
+function matchesTestOpportunityPattern(value: string): boolean {
+    return TEST_OPPORTUNITY_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+export function looksLikeTestOpportunity(title: string, companyName: string): boolean {
+    return matchesTestOpportunityPattern(title) || matchesTestOpportunityPattern(companyName);
+}
+
+export const notificationReadSchema = z.object({
+    ids: z.array(z.string().min(1).max(64)).max(200).optional(),
+});
+
+// Community Post helpful-mark schema (toggle — no body needed)
+export const communityPostVoteSchema = z.object({}).strip();
+
+// Community Post comment create schema
+export const communityPostCommentCreateSchema = z.object({
+    body: z.string().trim().min(1, 'Comment body is required').max(500, 'Comment must be at most 500 characters'),
+    parentId: z.string().min(1).max(64).optional(),
+    isAnonymous: z.boolean().optional().default(false),
+});
+
+// Community Post comment helpful-mark schema (toggle — no body needed)
+export const communityPostCommentVoteSchema = z.object({}).strip();
+
+// ============================================================================
+// FRESHER NEEDS: Saved searches, referral board, offer transparency
+// ============================================================================
+
+export const savedSearchCreateSchema = z.object({
+    name: z.string().trim().min(1, 'Name is required').max(100),
+    filters: z.object({
+        type: z.enum(['JOB', 'INTERNSHIP', 'WALKIN', 'GOVERNMENT']).optional(),
+        feedType: z.enum(['all', 'trending', 'remote', 'walkins', 'internships', '2026']).optional(),
+        city: z.string().trim().max(80).optional(),
+        tag: z.string().trim().max(80).optional(),
+        company: z.string().trim().max(120).optional(),
+        minSalary: z.number().int().min(0).max(200).optional(),
+        maxSalary: z.number().int().min(0).max(200).optional(),
+        batch: z.number().int().min(2020).max(2035).optional(),
+        closingSoon: z.boolean().optional(),
+    }).refine(
+        (f) => Object.values(f).some((v) => v !== undefined),
+        { message: 'At least one filter is required' }
+    ),
+    alertEnabled: z.boolean().optional(),
+});
+
+export const savedSearchUpdateSchema = z.object({
+    name: z.string().trim().min(1).max(100).optional(),
+    alertEnabled: z.boolean().optional(),
+});
+
+export const referralRequestCreateSchema = z.object({
+    company: z.string().trim().min(1, 'Company is required').max(120),
+    role: z.string().trim().max(120).optional(),
+    batch: z.number().int().min(2020).max(2035).optional(),
+    city: z.string().trim().max(80).optional(),
+    note: z.string().trim().max(1000).optional(),
+});
+
+export const referralResponseCreateSchema = z.object({
+    message: z.string().trim().max(1000).optional(),
+    contactHandle: z.string().trim().max(200).optional(),
+}).refine(
+    (d) => (d.message && d.message.length > 0) || (d.contactHandle && d.contactHandle.length > 0),
+    { message: 'Include a message or a contact handle' }
+);
+
+export const referralRequestStatusSchema = z.object({
+    status: z.enum(['OPEN', 'FULFILLED', 'CLOSED']),
+});
+
+export const salaryReportCreateSchema = z.object({
+    opportunityId: z.string().min(1).max(64).optional(),
+    company: z.string().trim().min(1, 'Company is required').max(120),
+    role: z.string().trim().min(1, 'Role is required').max(120),
+    batch: z.number().int().min(2020).max(2035).optional(),
+    city: z.string().trim().max(80).optional(),
+    reportType: z.enum(['OFFER', 'CURRENT_CTC']).optional(),
+    ctcFixed: z.number().int().min(0).max(100000).optional(),
+    ctcVariable: z.number().int().min(0).max(100000).optional(),
+    ctcTotal: z.number().int().min(0).max(100000).optional(),
+    inHandMonthly: z.number().int().min(0).max(1000000).optional(),
+    joinBonus: z.number().int().min(0).max(100000).optional(),
+    bondMonths: z.number().int().min(0).max(60).optional(),
+    notes: z.string().trim().max(1000).optional(),
+});
+

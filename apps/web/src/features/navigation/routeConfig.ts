@@ -1,0 +1,233 @@
+import HomeIcon from '@heroicons/react/24/outline/HomeIcon';
+import MagnifyingGlassIcon from '@heroicons/react/24/outline/MagnifyingGlassIcon';
+import BriefcaseIcon from '@heroicons/react/24/outline/BriefcaseIcon';
+import AcademicCapIcon from '@heroicons/react/24/outline/AcademicCapIcon';
+import BuildingLibraryIcon from '@heroicons/react/24/outline/BuildingLibraryIcon';
+import UserCircleIcon from '@heroicons/react/24/outline/UserCircleIcon';
+import type { ComponentProps } from 'react';
+
+export type NavRoute = {
+    href: string;
+    label: string;
+    mobileTitle?: string;
+    showInDesktop?: boolean;
+    showInMobileTabs?: boolean;
+    requiresAuth?: boolean;
+    icon?: React.ComponentType<ComponentProps<typeof HomeIcon>>;
+    mobileLabel?: string;
+};
+
+export function getNavRoutes(mode: "private" | "govt" = "private"): NavRoute[] {
+    if (mode === "govt") {
+        return [
+            {
+                href: '/jobs?tab=for-you',
+                label: 'Dashboard',
+                mobileTitle: 'Govt Mode',
+                mobileLabel: 'Home',
+                showInDesktop: false,
+                showInMobileTabs: true,
+                requiresAuth: true,
+                icon: HomeIcon,
+            },
+            {
+                href: '/jobs',
+                label: 'Latest Govt',
+                mobileTitle: 'Latest Govt',
+                mobileLabel: 'Latest',
+                showInDesktop: true,
+                showInMobileTabs: true,
+                icon: BriefcaseIcon,
+            },
+            {
+                href: '/jobs?sector=central',
+                label: 'Central Govt',
+                mobileTitle: 'Central Govt',
+                mobileLabel: 'Central',
+                showInDesktop: true,
+                showInMobileTabs: true,
+                icon: AcademicCapIcon,
+            },
+            {
+                href: '/jobs?sector=state',
+                label: 'State Govt',
+                mobileTitle: 'State Govt',
+                mobileLabel: 'State',
+                showInDesktop: true,
+                showInMobileTabs: true,
+                icon: AcademicCapIcon,
+            },
+            {
+                href: '/jobs?sector=bank',
+                label: 'Bank',
+                mobileTitle: 'Bank',
+                mobileLabel: 'Bank',
+                showInDesktop: true,
+                showInMobileTabs: false,
+                icon: BriefcaseIcon,
+            },
+            {
+                href: '/jobs?sector=railway',
+                label: 'Railway',
+                mobileTitle: 'Railway',
+                mobileLabel: 'Railway',
+                showInDesktop: true,
+                showInMobileTabs: false,
+                icon: BriefcaseIcon,
+            },
+            {
+                href: '/jobs?sector=defence',
+                label: 'Defence',
+                mobileTitle: 'Defence',
+                mobileLabel: 'Defence',
+                showInDesktop: true,
+                showInMobileTabs: false,
+                icon: BriefcaseIcon,
+            },
+            {
+                href: '/jobs?tab=saved',
+                label: 'Saved',
+                mobileTitle: 'Saved',
+                showInDesktop: false,
+                requiresAuth: true,
+            },
+        ];
+    }
+
+    return [
+        {
+            href: '/jobs?tab=for-you',
+            label: 'Dashboard',
+            mobileTitle: 'FresherFlow',
+            mobileLabel: 'Home',
+            showInDesktop: false,
+            showInMobileTabs: true,
+            requiresAuth: true,
+            icon: HomeIcon,
+        },
+        {
+            href: '/jobs',
+            label: 'Search',
+            mobileTitle: 'Jobs Feed',
+            mobileLabel: 'Feed',
+            showInDesktop: false,
+            showInMobileTabs: false,
+            icon: MagnifyingGlassIcon,
+        },
+        {
+            href: '/jobs',
+            label: 'Jobs',
+            mobileTitle: 'Jobs Feed',
+            mobileLabel: 'Jobs',
+            showInDesktop: true,
+            showInMobileTabs: true,
+            icon: BriefcaseIcon,
+        },
+        {
+            href: '/jobs/internships',
+            label: 'Internships',
+            mobileTitle: 'Internships Feed',
+            mobileLabel: 'Internships',
+            showInDesktop: true,
+            showInMobileTabs: true,
+            icon: AcademicCapIcon,
+        },
+        {
+            href: '/drives/walk-in',
+            label: 'Walk-ins',
+            mobileTitle: 'Walk-in Drives',
+            mobileLabel: 'Walk-ins',
+            showInDesktop: true,
+            showInMobileTabs: true,
+            icon: BriefcaseIcon,
+        },
+        {
+            href: '/jobs/remote',
+            label: 'Remote',
+            mobileTitle: 'Remote Jobs Feed',
+            mobileLabel: 'Remote',
+            showInDesktop: true,
+            showInMobileTabs: false,
+            icon: BriefcaseIcon,
+        },
+        {
+            href: '/govt',
+            label: 'Govt Jobs',
+            mobileTitle: 'Govt Jobs',
+            mobileLabel: 'Govt',
+            showInDesktop: true,
+            showInMobileTabs: true,
+            icon: BuildingLibraryIcon,
+        },
+        {
+            href: '/resources',
+            label: 'Resources',
+            mobileTitle: 'Resources',
+            mobileLabel: 'Resources',
+            showInDesktop: true,
+            showInMobileTabs: false,
+            icon: BuildingLibraryIcon,
+        },
+        {
+            href: '/account',
+            label: 'Account',
+            mobileTitle: 'Account',
+            mobileLabel: 'Account',
+            showInDesktop: false,
+            showInMobileTabs: true,
+            requiresAuth: true,
+            icon: UserCircleIcon,
+        },
+        {
+            href: '/jobs?tab=applied',
+            label: 'Tracker',
+            mobileTitle: 'Tracker',
+            showInDesktop: false,
+            requiresAuth: true,
+        },
+        {
+            href: '/jobs?tab=saved',
+            label: 'Saved',
+            mobileTitle: 'Saved',
+            showInDesktop: false,
+            requiresAuth: true,
+        },
+    ];
+}
+
+/**
+ * Routes that render the app sidebar + SiteHeader instead of the public
+ * DesktopNav. Kept here (not in Navigation.tsx) so headers such as
+ * MobileTopNav can ask "is this a sidebar page?" without importing
+ * Navigation, which renders those headers.
+ */
+export const SIDEBAR_ROUTES = [
+    '/jobs',
+    '/jobs/internships',
+    // Prefix entry: covers the hub, /drives/off-campus and /drives/walk-in
+    // (including /drives/walk-in/[city]). Listing only the leaf left the hub
+    // and off-campus on the public DesktopNav with no sidebar at all.
+    '/drives',
+    '/drives/walk-in',
+    '/govt',
+    '/jobs/remote',
+    '/jobs/browse',
+    '/off-campus',
+    '/companies',
+    '/skills',
+    '/roles',
+    '/locations',
+    '/batch',
+    '/account',
+    '/contribute',
+    '/resources',
+    '/community',
+];
+
+export function isSidebarPage(pathname: string): boolean {
+    if (!pathname) return false;
+    const normalized = pathname.toLowerCase();
+    if (normalized === '/') return false;
+    return SIDEBAR_ROUTES.some((route) => normalized.startsWith(route));
+}
+

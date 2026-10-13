@@ -1,0 +1,295 @@
+import { Router, Request, Response, NextFunction } from 'express';
+import { body, validationResult } from 'express-validator';
+import prisma from '../infrastructure/database/prisma';
+import { ResourceItemType } from '@fresherflow/types';
+import { requireAuth } from '../middleware/auth';
+import { sendError, ErrorCode } from '../middleware/errorHandler';
+import { logger } from '@fresherflow/utils';
+import { isSafeUrlForFetch } from '@fresherflow/utils';
+
+const router = Router();
+
+function validateOutboundUrl(raw: string, allowedHosts: string[]): URL {
+  const parsed = new URL(raw); // throws on invalid URL
+  if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Invalid protocol');
+  if (!allowedHosts.some(h => parsed.hostname === h || parsed.hostname.endsWith('.' + h))) {
+    throw new Error('Host not allowed');
+  }
+  return parsed;
+}
+
+// Simple webpage title fetcher
+async function fetchPageTitle(urlStr: string): Promise<string | null> {
+    if (!isSafeUrlForFetch(urlStr)) {
+        logger.warn(`Skipping fetch for unsafe URL: ${urlStr}`);
+        return null;
+    }
+    try {
+        const allowedHosts = [
+            'youtube.com', 'youtu.be', 'roadmap.sh', 'drive.google.com',
+            'dropbox.com', 'box.com', 'sharepoint.com', 'github.com',
+            'medium.com', 'dev.to', 'hashnode.dev', 'notion.so', 'docs.google.com'
+        ];
+        const validUrl = validateOutboundUrl(urlStr, allowedHosts);
+
+        // codeql[js/request-forgery]
+        // lgtm[js/request-forgery]
+        const response = await fetch(validUrl.toString(), {
+            headers: {
+                'User-Agent': 'FresherFlow Bot 1.0',
+                'Accept': 'text/html,application/xhtml+xml'
+            },
+            signal: AbortSignal.timeout(5000)
+        });
+        
+        if (!response.ok) return null;
+        
+        const html = await response.text();
+        const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+            return titleMatch[1]
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'")
+                .replace(/&apos;/g, "'")
+                .replace(/&amp;/g, '&')
+                .trim();
+        }
+
+    } catch (error) {
+        logger.warn(`Failed to fetch title for URL: ${urlStr}`, { error: String(error) });
+    }
+    return null;
+}
+
+// Auto-detect type
+function detectResourceType(url: string): ResourceItemType {
+    let hostname = '';
+    let pathname = '';
+    try {
+        const parsed = new URL(url);
+        hostname = parsed.hostname.toLowerCase();
+        pathname = parsed.pathname.toLowerCase();
+    } catch {
+        const lowerUrl = url.toLowerCase();
+        if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) return ResourceItemType.YOUTUBE;
+        if (lowerUrl.endsWith('.pdf')) return ResourceItemType.PDF;
+        if (lowerUrl.includes('roadmap.sh')) return ResourceItemType.ROADMAP;
+        if (lowerUrl.includes('drive.google.com') || lowerUrl.includes('dropbox.com') || lowerUrl.includes('onedrive') || lowerUrl.includes('box.com') || lowerUrl.includes('sharepoint')) return ResourceItemType.FILE;
+        return ResourceItemType.LINK;
+    }
+
+    if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com') || hostname === 'youtu.be') {
+        return ResourceItemType.YOUTUBE;
+    }
+    if (pathname.endsWith('.pdf') || url.split('?')[0].split('#')[0].toLowerCase().endsWith('.pdf')) {
+        return ResourceItemType.PDF;
+    }
+    if (hostname === 'roadmap.sh' || hostname.endsWith('.roadmap.sh')) {
+        return ResourceItemType.ROADMAP;
+    }
+
+    const isCloudStorage = 
+        hostname === 'drive.google.com' || hostname.endsWith('.drive.google.com') ||
+        hostname === 'dropbox.com' || hostname.endsWith('.dropbox.com') ||
+        hostname.split('.').includes('onedrive') ||
+        hostname === 'box.com' || hostname.endsWith('.box.com') ||
+        hostname.split('.').includes('sharepoint');
+
+    if (isCloudStorage) {
+        return ResourceItemType.FILE;
+    }
+
+    return ResourceItemType.LINK;
+}
+
+const adaptSingleUrlSubmit = (req: Request, res: Response, next: NextFunction): void => {
+    if (req.body && typeof req.body.url === 'string' && req.body.url.trim()) {
+        const url = req.body.url.trim();
+        req.body.title = req.body.title || 'Resource Link';
+        req.body.items = [
+            {
+                url,
+                title: req.body.title !== 'Resource Link' ? req.body.title : undefined,
+                type: req.body.type
+            }
+        ];
+    }
+    next();
+};
+
+const submitResourceValidation = [
+    body('title').isString().notEmpty().withMessage('Collection title is required'),
+    body('description').optional().isString().trim(),
+    body('company').optional().isString().trim(),
+    body('skills').optional().isArray(),
+    body('skills.*').isString().trim(),
+    body('tags').optional().isArray(),
+    body('tags.*').isString().trim(),
+    body('sector').optional().isIn(['PRIVATE', 'GOVERNMENT']).withMessage('Invalid sector'),
+    body('items').isArray({ min: 1 }).withMessage('At least one resource item is required'),
+    body('items.*.url').isURL({ require_tld: false }).withMessage('Each item must have a valid URL'),
+    body('items.*.title').optional().isString().trim(),
+    body('items.*.type').optional().isIn(Object.values(ResourceItemType)).withMessage('Invalid item type')
+];
+
+router.post('/', 
+    requireAuth, 
+    adaptSingleUrlSubmit,
+    submitResourceValidation, 
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                res.status(400).json({ error: errors.array()[0]?.msg || 'Validation failed' });
+                return;
+            }
+
+            const { title, description, company, skills, tags, items, sector } = req.body;
+            const userId = req.userId || null;
+
+            // Check for duplicate URLs across any existing APPROVED or PENDING collections
+            const urlsToCheck = items.map((item: { url: string }) => item.url.trim());
+            const existingItem = await prisma.resourceItem.findFirst({
+                where: {
+                    url: {
+                        in: urlsToCheck,
+                        mode: 'insensitive'
+                    }
+                },
+                include: {
+                    collection: true
+                }
+            });
+
+            if (existingItem) {
+                res.status(409).json({
+                    error: 'This link is already under review or approved!',
+                    existing: true,
+                    status: existingItem.collection.status
+                });
+                return;
+            }
+            
+            // Map items, auto-detecting types and titles if necessary
+            const mappedItems = await Promise.all(items.map(async (item: { url: string; type?: ResourceItemType; title?: string }) => {
+                const url = item.url.trim();
+                let type = item.type;
+                if (!type || !Object.values(ResourceItemType).includes(type)) {
+                    type = detectResourceType(url);
+                }
+                let itemTitle = item.title?.trim();
+                if (!itemTitle) {
+                    const fetchedTitle = await fetchPageTitle(url);
+                    itemTitle = fetchedTitle || url;
+                }
+                if (itemTitle.length > 200) {
+                    itemTitle = itemTitle.substring(0, 197) + '...';
+                }
+                return {
+                    title: itemTitle,
+                    url,
+                    type
+                };
+            }));
+
+            let finalCollectionTitle = title.trim();
+            if (finalCollectionTitle === 'Resource Link' && mappedItems.length === 1) {
+                finalCollectionTitle = mappedItems[0].title;
+            }
+
+            let username: string | null = null;
+            if (userId) {
+                const user = await prisma.user.findUnique({
+                    where: { id: userId },
+                    select: { username: true }
+                });
+                username = user?.username || null;
+            }
+
+            const collection = await prisma.resourceCollection.create({
+                data: {
+                    title: finalCollectionTitle,
+                    description: description || null,
+                    company: company || null,
+                    skills: skills || [],
+                    tags: tags || [],
+                    addedByUserId: userId,
+                    addedByUsername: username,
+                    sector: sector || 'PRIVATE',
+                    items: {
+                        create: mappedItems
+                    }
+                },
+                include: {
+                    items: true
+                }
+            });
+
+            res.status(201).json({ resource: collection });
+            
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Get the signed-in user's collections, any status (Contribute hub history).
+// Public GET / below intentionally returns APPROVED only.
+router.get('/mine', requireAuth, async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const userId = req.userId || null;
+        if (!userId) {
+            sendError(res, 401, ErrorCode.UNAUTHENTICATED, 'Sign in required', req.requestId);
+            return;
+        }
+        const collections = await prisma.resourceCollection.findMany({
+            where: { addedByUserId: userId },
+            orderBy: { createdAt: 'desc' },
+            take: 50,
+            select: {
+                id: true,
+                title: true,
+                status: true,
+                createdAt: true,
+                _count: { select: { items: true } },
+            },
+        });
+        res.json({
+            resources: collections.map((c) => ({
+                id: c.id,
+                title: c.title,
+                status: c.status,
+                createdAt: c.createdAt.toISOString(),
+                itemCount: c._count.items,
+            })),
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get approved collections (public)
+router.get('/', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const collections = await prisma.resourceCollection.findMany({
+            where: {
+                status: 'APPROVED'
+            },
+            include: {
+                items: true
+            },
+            orderBy: {
+                createdAt: 'desc'
+            },
+            take: 100
+        });
+
+        res.json({ resources: collections });
+    } catch (error) {
+        next(error);
+    }
+});
+
+export default router;

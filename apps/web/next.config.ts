@@ -1,0 +1,472 @@
+import events from "node:events";
+import { createRequire } from "node:module";
+import type { NextConfig } from "next";
+
+events.defaultMaxListeners = 30;
+
+// Sentry is production-only: importing @sentry/nextjs/config costs ~1.5s
+// on config load (seen as "Running next.config.ts took 2.4s") and
+// widenClientFileUpload instruments every file. Load it lazily and only
+// when NODE_ENV=production so `pnpm dev:web` stays fast.
+const require = createRequire(import.meta.url);
+const withSentryConfig: (config: NextConfig, opts: unknown) => NextConfig =
+  process.env.NODE_ENV === "production"
+    ? require("@sentry/nextjs/config").withSentryConfig
+    : ((c: NextConfig) => c);
+
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
+const originalConsoleError = console.error;
+console.error = (...args: any[]) => {
+  for (const arg of args) {
+    if (typeof arg === 'string' && (arg.includes('Failed to proxy') || arg.includes('ECONNREFUSED'))) {
+      return;
+    }
+    if (arg && typeof arg === 'object') {
+      const err = arg as any;
+      if (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) {
+        return;
+      }
+      if (err.cause && (err.cause.code === 'ENOTFOUND' || err.cause.code === 'ECONNREFUSED' || err.cause.message?.includes('ENOTFOUND') || err.cause.message?.includes('ECONNREFUSED'))) {
+        return;
+      }
+      if (Array.isArray(err.errors) && err.errors.some((e: any) => e.code === 'ECONNREFUSED' || e.message?.includes('ECONNREFUSED'))) {
+        return;
+      }
+    }
+  }
+  originalConsoleError(...args);
+};
+
+const originalConsoleLog = console.log;
+console.log = (...args: any[]) => {
+  for (const arg of args) {
+    if (typeof arg === 'string' && arg.includes('/_next/image') && arg.includes('500')) {
+      return;
+    }
+  }
+  originalConsoleLog(...args);
+};
+function resolveHost(value: string | undefined, fallback: string): string {
+  const raw = (value || '').trim();
+  if (!raw) return fallback;
+  try {
+    return new URL(raw).hostname.toLowerCase();
+  } catch {
+    return raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+  }
+}
+
+function resolveWebOrigin(...values: Array<string | undefined>): string {
+  for (const candidate of values) {
+    const raw = candidate?.trim();
+    if (!raw) continue;
+    try {
+      return new URL(raw).origin;
+    } catch {
+      try {
+        return new URL(`https://${raw}`).origin;
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return IS_PRODUCTION ? "" : "http://localhost:3000";
+}
+
+function resolveDevApiOrigin(): string {
+  const candidates = [
+    process.env.NEXT_PUBLIC_API_URL,
+    process.env.API_URL,
+    process.env.INTERNAL_API_URL,
+    "http://localhost:5000",
+  ];
+
+  for (const candidate of candidates) {
+    const value = candidate?.trim();
+    if (!value) continue;
+    try {
+      const url = new URL(/^https?:\/\//i.test(value) ? value : `http://${value}`);
+      return url.origin;
+    } catch {
+      continue;
+    }
+  }
+
+  return "http://localhost:5000";
+}
+
+const DEV_API_ORIGIN = resolveDevApiOrigin();
+const ADMIN_HOST = resolveHost(
+  process.env.ADMIN_WEB_HOST || process.env.NEXT_PUBLIC_ADMIN_WEB_HOST,
+  IS_PRODUCTION ? "" : "localhost"
+);
+const APP_ORIGIN = resolveWebOrigin(
+  process.env.NEXT_PUBLIC_APP_WEB_HOST,
+  process.env.APP_WEB_HOST,
+  process.env.NEXT_PUBLIC_APP_URL,
+  process.env.NEXT_PUBLIC_SITE_URL
+);
+
+const nextConfig: NextConfig = {
+  // `standalone` is needed for Docker/Vercel production only — it
+  // adds a full copy of node_modules to .next/standalone and slows
+  // dev startup. Disable in dev.
+  ...(IS_PRODUCTION ? { output: 'standalone' as const } : {}),
+
+  transpilePackages: [
+    "@fresherflow/types",
+    "@fresherflow/constants",
+    "@fresherflow/utils",
+    "@fresherflow/api-client",
+    "@fresherflow/ui"
+  ],
+
+  // Node.js-only packages — must never land in the browser bundle.
+  // Turbopack (unlike webpack) ignores config.resolve.fallback,
+  // so we list them here to keep them server-side only.
+  serverExternalPackages: [
+    "@fresherflow/parser",
+    "@fresherflow/pipeline",
+    "@fresherflow/plugins",
+    "playwright",
+    "playwright-core",
+    "chromium-bidi",
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-request-presigner",
+    "firebase-admin",
+    "jsonwebtoken",
+    "jwks-rsa",
+    "jose",
+    "pg",
+    "sharp",
+    "fs",
+    "node:fs",
+    "node:fs/promises",
+    "node:path",
+    "node:crypto",
+    "node:child_process",
+    "node:readline",
+    "node:net",
+    "node:tls",
+  ],
+
+  // Twitter-style navigation caching
+  // Pages stay cached in router for 5 minutes
+  // Back button = instant, no reload
+  experimental: {
+    optimizePackageImports: [
+      "@heroicons/react",
+      "lucide-react",
+    ],
+    staleTimes: {
+      dynamic: 300, // 5 minutes for dynamic pages
+      static: 1800, // 30 minutes for static pages
+    },
+  },
+
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: '**',
+        port: '',
+        pathname: '/**',
+      },
+    ],
+  },
+  async headers() {
+    const baseHeaders = [
+      // Needed for Google Identity popup/postMessage flows on login.
+      { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" },
+      { key: "Cross-Origin-Embedder-Policy", value: "unsafe-none" },
+      // Standard Security Headers
+      { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" },
+      { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "X-Frame-Options", value: "DENY" },
+      { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+      { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+      ...(APP_ORIGIN
+        ? [
+            { key: "Access-Control-Allow-Credentials", value: "true" },
+            { key: "Access-Control-Allow-Origin", value: APP_ORIGIN },
+            { key: "Access-Control-Allow-Methods", value: "GET,OPTIONS,PATCH,DELETE,POST,PUT" },
+            { key: "Access-Control-Allow-Headers", value: "X-CSRF-Token, X-Requested-With, X-Requested-From, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, sentry-trace, baggage" },
+          ]
+        : []),
+    ];
+
+    return [
+      ...(ADMIN_HOST
+        ? [{
+            source: "/:path*",
+            has: [{ type: "host" as const, value: ADMIN_HOST }],
+            headers: [
+              { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive, nosnippet" },
+            ],
+          }]
+        : []),
+      {
+        source: "/admin",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive, nosnippet" },
+        ],
+      },
+      {
+        source: "/admin/:path*",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive, nosnippet" },
+        ],
+      },
+      // ── (user) group: noindex at the edge ──
+      // Every route in `src/app/(user)` is private or is a stub that 308s into
+      // a tabbed app page. None of it is indexable, and none of it declared
+      // `robots` in metadata — `next.config.ts` is the only place that can
+      // guarantee the header on all eleven paths and their children at once.
+      //
+      // A header, not just `metadata.robots`, is deliberate: ten of these
+      // responses are 308 redirects, and a robots meta tag in a body that is
+      // never sent stops nothing. Google honours `X-Robots-Tag: noindex` on a
+      // redirect response and will not follow it.
+      //
+      // One entry, not twenty-two: a path-to-regexp custom pattern lists the
+      // whole group, and `:userPath*` matches zero or more segments so this
+      // also covers `/account` itself, not just `/account/...`. Verified
+      // against the bundled matcher in `next/dist/compiled/path-to-regexp`:
+      // matches /account, /saved, /profile/complete, /saved/x; does not match
+      // /jobs or /admin.
+      {
+        source: "/:userSection(account|alerts|dashboard|feedback|followed-companies|notifications|profile|referral|saved|settings|tracker)/:userPath*",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive, nosnippet" },
+        ],
+      },
+      {
+        source: "/:path*",
+        headers: baseHeaders,
+      },
+    ];
+  },
+  async rewrites() {
+    const rewritesList = [
+      {
+        source: "/sitemap.xml",
+        destination: "/api/public/sitemap?file=sitemap.xml",
+      },
+      {
+        source: "/sitemap-:name.xml",
+        destination: "/api/public/sitemap?file=sitemap-:name.xml",
+      },
+    ];
+
+    if (process.env.NODE_ENV === 'production') {
+      return rewritesList;
+    }
+
+    rewritesList.push({
+      source: "/api/:path*",
+      destination: `${DEV_API_ORIGIN}/api/:path*`,
+    });
+
+    return rewritesList;
+  },
+  async redirects() {
+    return [
+      {
+        source: "/internships",
+        destination: "/jobs/internships",
+        permanent: true,
+      },
+      {
+        source: "/internships/:slug+",
+        destination: "/jobs/:slug+",
+        permanent: true,
+      },
+      {
+        source: "/remote",
+        destination: "/jobs/remote",
+        permanent: true,
+      },
+      // Walk-ins are now part of the Drives hub. Every legacy spelling lands on
+      // the canonical page in ONE hop — chaining through /jobs/walkins (which
+      // itself redirects to /drives) burned a redirect and diluted the signal.
+      {
+        source: "/walk-ins",
+        destination: "/drives/walk-in",
+        permanent: true,
+      },
+      {
+        source: "/jobs/walk-ins",
+        destination: "/drives/walk-in",
+        permanent: true,
+      },
+      {
+        source: "/jobs/walk-ins/:path*",
+        destination: "/drives/walk-in/:path*",
+        permanent: true,
+      },
+      {
+        source: "/jobs/walkins",
+        destination: "/drives",
+        permanent: true,
+      },
+      {
+        source: "/jobs/walkins/:path*",
+        destination: "/drives/walk-in/:path*",
+        permanent: true,
+      },
+      // `/off-campus` is referenced by Navigation.tsx, routeConfig.ts,
+      // navSpaces.ts and paths.ts but had no route behind it — a dead link.
+      // Point it at the real hub.
+      {
+        source: "/off-campus",
+        destination: "/drives/off-campus",
+        permanent: true,
+      },
+      {
+        source: "/government-jobs/:path*",
+        destination: "/govt/:path*",
+        permanent: true,
+      },
+      // One hop, not two. This used to land on `/locations/:path*`, which is itself a
+      // legacy source that 301s into /jobs — so every old link crawled two redirects
+      // through a namespace we no longer serve.
+      {
+        source: "/location/:path*",
+        destination: "/jobs/:path*",
+        permanent: true,
+      },
+
+      // ── Taxonomy v2 301 ledger (doc 22 §22.3 / doc 21 §21.7) ──
+      // ONE /jobs namespace: /jobs/{role}, /jobs/{city}, /jobs/{skill},
+      // /jobs/{year}-batch, /jobs/{role}-in-{city}, /jobs/browse.
+      {
+        source: "/skills",
+        destination: "/jobs/browse",
+        permanent: true,
+      },
+      {
+        source: "/skills/:name",
+        destination: "/jobs/:name",
+        permanent: true,
+      },
+      {
+        source: "/roles",
+        destination: "/jobs/browse",
+        permanent: true,
+      },
+      {
+        source: "/roles/:slug",
+        destination: "/jobs/:slug",
+        permanent: true,
+      },
+      {
+        source: "/locations",
+        destination: "/jobs/browse",
+        permanent: true,
+      },
+      {
+        source: "/locations/remote",
+        destination: "/jobs/remote",
+        permanent: true,
+      },
+      {
+        source: "/locations/:city",
+        destination: "/jobs/:city",
+        permanent: true,
+      },
+      {
+        source: "/batch",
+        destination: "/jobs/browse",
+        permanent: true,
+      },
+      {
+        source: "/batch/:year",
+        destination: "/jobs/:year-batch",
+        permanent: true,
+      },
+      {
+        source: "/opportunities/:slug",
+        destination: "/jobs/:slug",
+        permanent: true,
+      },
+      {
+        source: "/opportunities",
+        destination: "/jobs",
+        permanent: true,
+      },
+
+      {
+        source: "/walk-ins/details/:slug",
+        destination: "/jobs/:slug",
+        permanent: true,
+      },
+      {
+        source: "/walk-ins/opportunity/:slug",
+        destination: "/jobs/:slug",
+        permanent: true,
+      },
+      {
+        source: "/index",
+        destination: "/",
+        permanent: true,
+      },
+      {
+        source: "/home",
+        destination: "/",
+        permanent: true,
+      },
+      {
+        source: "/download",
+        destination: "/app",
+        permanent: true,
+      },
+      // Commit 73eb2ca9 renamed (moderator)/moderation/ → (moderator)/moderator/
+      // (R100 — the directory moved, contents unchanged), so every /moderation
+      // link 404s. The area is permanent under its new name; 301 in ONE hop for
+      // the hub and every queue under it.
+      {
+        source: "/moderation",
+        destination: "/moderator",
+        permanent: true,
+      },
+      {
+        source: "/moderation/:path*",
+        destination: "/moderator/:path*",
+        permanent: true,
+      },
+      {
+        source: "/:slug([a-z0-9][a-z0-9-]*-[a-f0-9]{8})",
+        destination: "/jobs/:slug",
+        permanent: true,
+      },
+    ];
+  },
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        tls: false,
+        net: false,
+        fs: false,
+        child_process: false,
+        readline: false,
+      };
+    }
+    return config;
+  },
+};
+
+export default withSentryConfig(nextConfig, {
+  // For all available options, see:
+  // https://github.com/getsentry/sentry-webpack-plugin#options
+  silent: true,
+  org: "fresherflow",
+  project: "javascript-nextjs",
+  // widenClientFileUpload instruments every client file — only worth
+  // the cost in production. In dev we already no-op withSentryConfig
+  // above, but keep this false as safety.
+  widenClientFileUpload: IS_PRODUCTION,
+});

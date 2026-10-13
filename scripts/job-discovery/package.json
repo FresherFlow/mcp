@@ -1,0 +1,29 @@
+{
+  "name": "job-discovery",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@fresherflow/constants": "workspace:^",
+    "@fresherflow/parser": "workspace:*",
+    "@fresherflow/pipeline": "workspace:*",
+    "@fresherflow/plugins": "workspace:*",
+    "@fresherflow/types": "workspace:*",
+    "@fresherflow/utils": "workspace:*",
+    "@supabase/supabase-js": "^2.112.0",
+    "cheerio": "^1.0.0",
+    "fast-xml-parser": "^5.11.2",
+    "playwright": "^1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.3",
+    "tsx": "^4.23.5",
+    "typescript": "^5.7.3"
+  }
+}

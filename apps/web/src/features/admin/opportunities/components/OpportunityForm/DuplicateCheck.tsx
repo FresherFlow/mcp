@@ -1,0 +1,58 @@
+import Link from 'next/link';
+
+interface DuplicateCandidate {
+    id: string;
+    title: string;
+    company: string;
+    status: string;
+    updatedAt: string;
+    score?: number;
+}
+
+interface DuplicateCheckProps {
+    checking: boolean;
+    candidates: DuplicateCandidate[];
+}
+
+export function DuplicateCheck({ checking, candidates }: DuplicateCheckProps) {
+    if (!checking && candidates.length === 0) return null;
+
+    return (
+        <div className="rounded-lg border border-warning/50 bg-warning/70 dark:bg-warning/10 p-3 space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-warning dark:text-warning">
+                Potential duplicate check
+            </p>
+            {checking ? (
+                <p className="text-sm text-muted-foreground">Scanning existing listings...</p>
+            ) : (
+                <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                        Found {candidates.length} similar listing{candidates.length > 1 ? 's' : ''}. Review before publish.
+                    </p>
+                    <div className="space-y-1.5">
+                        {candidates.map((dup) => (
+                            <Link
+                                key={dup.id}
+                                href={`/admin/opportunities/edit/${dup.id}`}
+                                className="flex items-center justify-between rounded-md border border-border bg-card px-2.5 py-2 hover:bg-muted/30 transition-colors"
+                            >
+                                <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-foreground truncate">{dup.title}</p>
+                                    <p className="text-xs text-muted-foreground truncate">{dup.company}</p>
+                                </div>
+                                <div className="shrink-0 text-right">
+                                    {typeof dup.score === 'number' ? (
+                                        <p className="text-xs font-semibold capitalize tracking-wider text-warning dark:text-warning">
+                                            {Math.round(dup.score * 100)}% match
+                                        </p>
+                                    ) : null}
+                                    <p className="text-xs font-semibold capitalize tracking-wider text-muted-foreground">{dup.status}</p>
+                                </div>
+                            </Link>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}

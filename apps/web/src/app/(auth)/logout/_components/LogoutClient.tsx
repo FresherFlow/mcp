@@ -1,0 +1,58 @@
+'use client';
+
+import { useEffect, Suspense } from 'react';
+import { useAuth } from '@/lib/auth/AuthContext';
+import { useSearchParams } from 'next/navigation';
+import { ArrowRightOnRectangleIcon } from '@heroicons/react/24/outline';
+import { Card } from '@/ui/Card';
+import { isSafeInternalRedirect } from '@/lib/config/paths';
+
+function LogoutContent() {
+    const { logout } = useAuth();
+    const searchParams = useSearchParams();
+    const redirectParam = searchParams.get('redirect') || searchParams.get('to');
+
+    useEffect(() => {
+        const target = isSafeInternalRedirect(redirectParam) ? (redirectParam as string) : '/login';
+            
+        if (logout) {
+            void logout(target);
+        }
+    }, [logout, redirectParam]);
+
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background via-background to-muted/20 p-4">
+            <div className="animate-in fade-in zoom-in duration-500 max-w-md w-full p-8 text-center space-y-6"><Card className="w-full">
+                <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto animate-pulse">
+                    <ArrowRightOnRectangleIcon className="w-8 h-8 text-primary" />
+                </div>
+                <div className="space-y-2">
+                    <h1 className="text-2xl font-bold tracking-tight">Logging Out</h1>
+                    <p className="text-sm text-muted-foreground">
+                        Securing your session and clearing credentials...
+                    </p>
+                </div>
+                <div className="flex items-center justify-center gap-2">
+                    <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{animationDelay:'-0.3s'}}></div>
+                    <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{animationDelay:'-0.15s'}}></div>
+                    <div className="w-2 h-2 bg-primary rounded-full animate-bounce"></div>
+                </div>
+            </Card>
+            </div>
+        </div>
+    );
+}
+
+export default function LogoutClient() {
+    return (
+        <Suspense fallback={null}>
+            <LogoutContent />
+        </Suspense>
+    );
+}
+
+
+
+
+
+

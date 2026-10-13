@@ -1,0 +1,100 @@
+import { Request, Response, NextFunction } from 'express';
+import { redis } from '@fresherflow/database';
+import { AppError } from './errorHandler';
+import { logger } from '@fresherflow/utils';
+
+// In-memory fallback store
+const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+
+/** Clears the in-memory fallback counters. Test-only helper so suites that make
+ *  many writes from one IP do not leak rate-limit state into later cases. */
+export function resetRateLimitStoreForTests() {
+    rateLimitStore.clear();
+}
+
+function isRedisEnabled() {
+    return process.env.REDIS_ENABLED !== 'false';
+}
+
+interface RateLimitOptions {
+    windowMs: number;
+    max: number;
+    message: string;
+    keyPrefix?: string;
+}
+
+/**
+ * Generic Rate Limiting Middleware
+ */
+export function createRateLimiter(options: RateLimitOptions) {
+    return async (req: Request, res: Response, next: NextFunction) => {
+        // Key on `req.ip`, which `app.set('trust proxy', 1)` in `src/index.ts`
+        // resolves from exactly one proxy hop. The raw `x-forwarded-for` header
+        // is client-supplied before it reaches that proxy: keying on it let any
+        // caller mint a fresh bucket per request by rotating the header, which
+        // made every limiter built on this factory bypassable with one curl —
+        // including the auth and OTP limiters.
+        const ip = req.ip || 'unknown-ip';
+        const key = `${options.keyPrefix || 'rl'}:${ip}`;
+        const now = Date.now();
+
+        if (isRedisEnabled()) {
+            try {
+                const count = await redis.incr(key);
+                if (count === 1) {
+                    await redis.pexpire(key, options.windowMs);
+                }
+
+                const ttl = await redis.pttl(key);
+
+                res.setHeader('X-RateLimit-Limit', options.max);
+                res.setHeader('X-RateLimit-Remaining', Math.max(0, options.max - count));
+                res.setHeader('X-RateLimit-Reset', new Date(now + ttl).toUTCString());
+
+                if (count > options.max) {
+                    return next(new AppError(options.message, 429));
+                }
+                return next();
+            } catch (err: unknown) {
+                logger.error('[RateLimit] Redis failure, falling back to memory', { error: err });
+            }
+        }
+
+        // Fallback to in-memory store
+        const entry = rateLimitStore.get(key);
+
+        if (!entry || entry.resetAt < now) {
+            const newEntry = {
+                count: 1,
+                resetAt: now + options.windowMs
+            };
+            rateLimitStore.set(key, newEntry);
+
+            res.setHeader('X-RateLimit-Limit', options.max);
+            res.setHeader('X-RateLimit-Remaining', options.max - 1);
+            res.setHeader('X-RateLimit-Reset', new Date(newEntry.resetAt).toUTCString());
+
+            return next();
+        }
+
+        entry.count += 1;
+        const remaining = Math.max(0, options.max - entry.count);
+
+        res.setHeader('X-RateLimit-Limit', options.max);
+        res.setHeader('X-RateLimit-Remaining', remaining);
+        res.setHeader('X-RateLimit-Reset', new Date(entry.resetAt).toUTCString());
+
+        if (entry.count > options.max) {
+            return next(new AppError(options.message, 429));
+        }
+
+        next();
+
+        // Background cleanup (very simple)
+        if (rateLimitStore.size > 1000) {
+            for (const [k, v] of rateLimitStore.entries()) {
+                if (v.resetAt < now) rateLimitStore.delete(k);
+            }
+        }
+    };
+}

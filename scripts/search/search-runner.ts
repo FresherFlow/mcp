@@ -1,0 +1,312 @@
+import { AtsJob } from '@fresherflow/plugins';
+import {
+  collectPublicFeeds,
+  collectGitHubHiring,
+  collectDirectCompanyPortals,
+  collectDorkSearches,
+  collectWalkinDrives,
+  collectVcStartupPortals,
+
+  filterAndVerifyJobs,
+  saveDiscoveredJobsArtifact,
+  persistDiscoveredJobsToDb,
+  writeGitHubStepSummary,
+  startRun,
+  finishRun,
+  fetchTargetSitesFromCdn,
+  loadSeenUrlsCache,
+  saveSeenUrlsCache,
+  loadPostedUrlsCache,
+  savePostedUrlsCache,
+  postJobsToSocial,
+  createBoardPublisher,
+  loadEnv,
+  loadRolesFromCdn,
+  CORE_SEARCH_KEYWORDS,
+} from '@fresherflow/pipeline';
+
+interface RunnerOptions {
+  hoursOld?: number;
+  resultsWanted?: number;
+  dork?: boolean;
+  roles?: boolean;
+  dryRun?: boolean;
+  channel?: string;
+  noCache?: boolean;
+}
+
+function parseRunnerArgs(args: string[]): RunnerOptions {
+  const options: RunnerOptions = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--hoursOld' && args[i + 1]) options.hoursOld = parseInt(args[++i], 10);
+    else if (arg === '--resultsWanted' && args[i + 1]) options.resultsWanted = parseInt(args[++i], 10);
+    else if (arg === '--dork') options.dork = true;
+    else if (arg === '--roles') options.roles = true;
+    else if (arg === '--dry-run') options.dryRun = true;
+    else if (arg === '--no-cache' || arg === '--force') options.noCache = true;
+    else if (arg === '--channel' && args[i + 1]) options.channel = args[++i].toLowerCase();
+  }
+  return options;
+}
+
+async function runSearchEngine() {
+  await loadEnv();
+  const startTime = Date.now();
+  const options = parseRunnerArgs(process.argv.slice(2));
+  const envHours = process.env.HOURS_OLD ? parseInt(process.env.HOURS_OLD, 10) : undefined;
+  const hoursOld: number = options.hoursOld ?? (!isNaN(envHours!) ? envHours! : 72);
+  const limit = options.resultsWanted ?? 15;
+  const channel = options.channel || 'all';
+
+  console.log(`\n======================================================`);
+  console.log(`🚀 STARTING EXTERNAL MULTI-CHANNEL JOB SEARCH ENGINE`);
+  console.log(`   └─ Channel: ${channel.toUpperCase()}`);
+  console.log(`   └─ Cutoff: ${hoursOld} hours`);
+  console.log(`   └─ Cache: ${options.noCache ? 'BYPASS' : 'ENABLED'}`);
+  console.log(`   └─ Dorking Enabled: ${options.dork ? 'YES' : 'NO'}`);
+  console.log(`   └─ Role Expansion: ${options.roles ? 'YES' : 'NO'}`);
+  console.log(`   └─ Dry Run: ${options.dryRun ? 'YES' : 'NO'}`);
+  console.log(`======================================================`);
+
+  const runId = options.dryRun ? null : await startRun();
+
+  if (!options.dryRun) {
+    try {
+      const { sendTelegramMessage } = await import('@fresherflow/utils');
+      await sendTelegramMessage(
+        `🚀 <b>External Search Bot Started</b>\n\nChannels: ${channel.toUpperCase()} (${options.dork ? 'Dorks' : 'Fast Mode'})`
+      );
+    } catch {
+      // Non-blocking
+    }
+  }
+
+  // Register CDN aggregator domains so aggregator-site wrapper URLs are never
+  // treated as real apply links by isValidApplyLink (used by walkin collector).
+  await fetchTargetSitesFromCdn();
+  const seenUrlsCache = options.noCache ? new Set<string>() : await loadSeenUrlsCache();
+  // Social-post dedup: never schedule the same apply link to X/LinkedIn/TG twice.
+  const postedUrlsCache = options.noCache ? [] : await loadPostedUrlsCache();
+  const rawCandidates: AtsJob[] = [];
+  const rawSourceCounts: Record<string, number> = {};
+
+  try {
+    const keywords = options.roles ? await loadRolesFromCdn() : CORE_SEARCH_KEYWORDS;
+
+    // Run selected or all channels concurrently
+    const [feedJobs, vcJobs, companyJobs, githubJobs, walkinJobs] = await Promise.all([
+      (channel === 'all' || channel === 'feeds') ? collectPublicFeeds({ resultsWanted: limit, hoursOld }) : Promise.resolve([]),
+      (channel === 'all' || channel === 'vc' || channel === 'boards') ? collectVcStartupPortals() : Promise.resolve([]),
+      (channel === 'all' || channel === 'companies') ? collectDirectCompanyPortals({ resultsWanted: limit, hoursOld }) : Promise.resolve([]),
+      (channel === 'all' || channel === 'github') ? collectGitHubHiring({ resultsWanted: limit }) : Promise.resolve([]),
+      (channel === 'all' || channel === 'walkin') ? collectWalkinDrives({ resultsWanted: 10, hoursOld }) : Promise.resolve([]),
+    ]);
+
+    // Job boards (Internshala, LinkedIn, HasJob, HackerNews, WeWorkRemotely) are
+    // no longer crawled: they only republish employer postings, they cost the
+    // most crawl time, and their links/titles are the polluted ones. Everything
+    // collected below comes from direct employer/ATS pages.
+    rawCandidates.push(...feedJobs, ...vcJobs, ...companyJobs, ...githubJobs, ...walkinJobs);
+
+
+    // Track raw source counts
+    for (const job of rawCandidates) {
+      const src = job.source || 'Unknown';
+      rawSourceCounts[src] = (rawSourceCounts[src] || 0) + 1;
+    }
+
+    // Run optional dorks if requested
+    if (options.dork) {
+      const dorkJobs = await collectDorkSearches({ maxQueries: 6 });
+      rawCandidates.push(...dorkJobs);
+      rawSourceCounts['SearchDorks'] = (rawSourceCounts['SearchDorks'] || 0) + dorkJobs.length;
+    }
+
+    console.log(`\n======================================================`);
+    console.log(`📊 COLLECTED RAW CANDIDATES: ${rawCandidates.length}`);
+    console.log(`======================================================`);
+
+    // Verify and Filter using Seen URLs Cache
+    const { verifiedJobs, stats, sourceStats } = await filterAndVerifyJobs(rawCandidates, {
+      hoursOld,
+      cachedSeenUrls: seenUrlsCache,
+    });
+
+    // Calculate verified count per source
+    const verifiedSourceCounts: Record<string, number> = {};
+    for (const j of verifiedJobs) {
+      const src = j.source || 'Unknown';
+      verifiedSourceCounts[src] = (verifiedSourceCounts[src] || 0) + 1;
+    }
+
+    // DRY RUN: show what WOULD be posted, touch nothing — no DB write, no social
+    // posts, no cache mutation. Safe for sample/local test runs.
+    if (options.dryRun) {
+      console.log(`\n⚠️  DRY RUN — skipping DB persist + social posting + cache writes.`);
+      console.log(`🎯 Verified candidates that WOULD be posted (${verifiedJobs.length}):`);
+      verifiedJobs.forEach((j, i) => {
+        console.log(`   ${i + 1}. [${j.company || '?'}] ${j.title}\n      Apply: ${j.applyLink}`);
+      });
+      const durationSec = Math.round((Date.now() - startTime) / 1000);
+      console.log(`\n📊 DRY SUMMARY\n   ├─ Raw Fetched:   ${stats.totalRaw}\n   ├─ Verified Live:  ${verifiedJobs.length}\n   └─ Duration:      ${durationSec}s`);
+      await finishRun(runId, {
+        total_found: stats.totalRaw,
+        accepted: 0,
+        review_required: 0,
+        duplicates: 0,
+        failed: 0,
+        duration_ms: Date.now() - startTime,
+        status: 'COMPLETED',
+        metadata: { dry_run: true, live_count: verifiedJobs.length },
+      });
+      return;
+    }
+
+    // Update seen URLs cache with newly discovered candidate URLs
+    for (const candidate of rawCandidates) {
+      if (candidate.applyLink) seenUrlsCache.add(candidate.applyLink);
+    }
+    await saveSeenUrlsCache(seenUrlsCache);
+
+    // Output Artifact & Persist to Database (Supabase discovered_jobs)
+    await saveDiscoveredJobsArtifact(verifiedJobs, 'discovered_jobs.json');
+    await persistDiscoveredJobsToDb(verifiedJobs, runId);
+
+    // Schedule verified jobs to social (X, LinkedIn, Telegram channel). Search
+    // results carry real company names (Aditya Birla Capital, Oshi Health...), so
+    // the shared caption renders the Company line. Posted links are cached so a
+    // job is never scheduled twice across runs.
+    try {
+      if (verifiedJobs.length > 0) {
+        const socialJobs = verifiedJobs
+          .filter(j => j.applyLink && j.title)
+          .map(j => ({
+            title: j.title,
+            applyLink: j.applyLink,
+            company: j.company,
+            locations: [j.location].filter((l): l is string => !!l && !!l.trim()),
+            source: j.source,
+          }));
+        const scheduled = await postJobsToSocial(socialJobs, postedUrlsCache);
+        console.log(`[Social] ${scheduled} new verified jobs scheduled to social media.`);
+
+        // Community board intake: file `new_role` issues for the same jobs.
+        // Disabled unless BOARD_PUBLISH_ENABLED=true (dry-run by default).
+        const board = createBoardPublisher();
+        if (board) {
+          for (const j of socialJobs) {
+            await board.post({
+              title: j.title,
+              company: j.company || '',
+              applyLink: j.applyLink,
+              locations: j.locations,
+            });
+          }
+          const bs = board.summary();
+          console.log(`[Board] eligible: ${bs.eligible} | filed: ${bs.created} | skipped: ${bs.skipped} | failed: ${bs.failed}`);
+        }
+      } else {
+        console.log('[Social] No verified jobs to post this run.');
+      }
+      await savePostedUrlsCache(postedUrlsCache);
+    } catch (err: any) {
+      console.warn(`[Social] Posting note: ${err.message}`);
+    }
+
+    const durationSec = Math.round((Date.now() - startTime) / 1000);
+
+    // Write GitHub Action step summary if running in CI
+    await writeGitHubStepSummary({
+      rawCount: stats.totalRaw,
+      duplicateCount: stats.duplicateFiltered,
+      sourceCounts: rawSourceCounts,
+      sourceStats,
+      staleCount: stats.staleFiltered,
+      locCount: stats.locationFiltered,
+      scoreCount: stats.scoreFiltered,
+      verifiedJobs,
+      durationSec,
+      hoursOld,
+    });
+
+    console.log(`\n======================================================`);
+    console.log(`📊 FINAL SWEEP SUMMARY`);
+    console.log(`   ├─ Total Raw Fetched:    ${stats.totalRaw}`);
+    console.log(`   ├─ Stale Filtered:       ${stats.staleFiltered}`);
+    console.log(`   ├─ Rejected (Loc/Score): ${stats.locationFiltered + stats.scoreFiltered}`);
+    console.log(`   ├─ Verified Live Jobs:   ${stats.live} (Dead: ${stats.dead})`);
+    console.log(`   └─ Duration:             ${durationSec}s`);
+    console.log(`------------------------------------------------------`);
+    console.log(`📈 Verified Jobs by Source:`);
+    for (const [src, count] of Object.entries(verifiedSourceCounts)) {
+      console.log(`   ├─ [${src}]: ${count} verified live roles`);
+    }
+    if (Object.keys(verifiedSourceCounts).length === 0) {
+      console.log(`   └─ None verified`);
+    }
+    console.log(`------------------------------------------------------`);
+    console.log(`🎯 Verified Fresh Opportunities (${verifiedJobs.length}):`);
+    verifiedJobs.forEach((job, i) => {
+      console.log(`   ${i + 1}. [${job.source}] ${job.title}`);
+      console.log(`      Company: ${job.company} | Location: ${job.location || 'India/Remote'}`);
+      console.log(`      Apply:   ${job.applyLink}\n`);
+    });
+    console.log(`======================================================\n`);
+
+    try {
+      const { sendTelegramMessage } = await import('@fresherflow/utils');
+      let linksSummary = '';
+      verifiedJobs.slice(0, 5).forEach((j, i) => {
+        linksSummary += `\n${i + 1}. <b>${j.title}</b> @ ${j.company}\n🔗 <a href="${j.applyLink}">Apply Link</a>`;
+      });
+
+      const tgMsg =
+        `✅ <b>External Search Bot Finished</b>\n\n` +
+        `🔍 Raw Fetched: ${stats.totalRaw}\n` +
+        `🗑️ Stale/Location/Score Rejected: ${stats.staleFiltered + stats.locationFiltered + stats.scoreFiltered}\n` +
+        `✨ <b>Verified Live Jobs: ${stats.live}</b>\n` +
+        `⏱️ Duration: ${durationSec}s\n` +
+        (linksSummary ? `\n<b>Top Fresh Opportunities:</b>${linksSummary}` : '');
+
+      await sendTelegramMessage(tgMsg);
+    } catch {
+      // Non-blocking
+    }
+
+    await finishRun(runId, {
+      total_found: stats.totalRaw,
+      accepted: stats.live,
+      review_required: 0,
+      duplicates: stats.staleFiltered,
+      failed: stats.dead,
+      duration_ms: Date.now() - startTime,
+      status: 'COMPLETED',
+      metadata: {
+        raw_count: stats.totalRaw,
+        live_count: stats.live,
+        source_counts: verifiedSourceCounts,
+      },
+    });
+  } catch (err: any) {
+    console.error('Fatal Search Sweep Error:', err);
+    await finishRun(runId, {
+      total_found: rawCandidates.length,
+      accepted: 0,
+      review_required: 0,
+      duplicates: 0,
+      failed: 1,
+      duration_ms: Date.now() - startTime,
+      status: 'FAILED',
+      metadata: { error: err.message },
+    });
+    throw err;
+  }
+}
+
+runSearchEngine()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error('Fatal Runner Error:', err);
+    process.exit(1);
+  });

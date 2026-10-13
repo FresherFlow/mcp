@@ -1,0 +1,253 @@
+'use client';
+
+import { useState, useMemo } from 'react';
+import { BlurImage } from '@/ui/BlurImage';
+import { cn } from "@/ui/cn";
+import { BRAND_DOMAINS, getRootDomain } from '@fresherflow/utils/domains';
+import { CDN_URL } from '@/lib/utils/runtimeConfig';
+import ShieldCheckIcon from '@heroicons/react/24/solid/ShieldCheckIcon';
+
+// Global in-memory cache for instant resolution
+const logoCache = new Map<string, string>();
+
+interface CompanyLogoProps {
+    companyName: string;
+    companyWebsite?: string | null;
+    companyLogoUrl?: string | null;
+    applyLink?: string | null;
+    className?: string;
+    /** Pass true for the first 1-2 above-fold cards to improve LCP */
+    priority?: boolean;
+    isGovernment?: boolean;
+}
+
+export default function CompanyLogo({ companyName, companyWebsite, companyLogoUrl, applyLink, className, priority = false, isGovernment }: CompanyLogoProps) {
+
+    const normalizedName = (companyName || '').toLowerCase().trim();
+    const isTcsBrand = normalizedName.includes('tata consultancy services') || normalizedName.includes(' tcs') || normalizedName === 'tcs';
+
+    const isGovDetected = useMemo(() => {
+        if (isGovernment) return true;
+        const nameClean = normalizedName;
+        const hasGovKeyword = nameClean.includes('commission') || nameClean.includes('board') || nameClean.includes('police') || nameClean.includes('railway') || nameClean.includes('air force') || nameClean.includes('navy') || nameClean.includes('army') || nameClean.includes('ministry');
+        const hasGovDomain = (companyWebsite && (companyWebsite.includes('.gov.in') || companyWebsite.includes('.nic.in') || companyWebsite.includes('tgprb.in') || companyWebsite.includes('cdac.in'))) ||
+                             (applyLink && (applyLink.includes('.gov.in') || applyLink.includes('.nic.in') || applyLink.includes('tgprb.in') || applyLink.includes('cdac.in')));
+        return !!(hasGovKeyword || hasGovDomain);
+    }, [isGovernment, normalizedName, companyWebsite, applyLink]);
+
+    const candidates = useMemo(() => {
+        const urls: string[] = [];
+
+        // 1. Explicit Logo URL (highest priority)
+        let explicitUrl = companyLogoUrl;
+        if (explicitUrl && explicitUrl.includes('logo.clearbit.com')) {
+            try {
+                const parsed = new URL(explicitUrl);
+                const domain = parsed.pathname.slice(1); // gets 'apple.com'
+                if (domain) {
+                    explicitUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+                }
+            } catch (e) {
+                explicitUrl = null;
+            }
+        }
+        if (explicitUrl) {
+            urls.push(explicitUrl);
+        }
+
+        if (isGovDetected && !companyLogoUrl) {
+            // Check for an acronym in parentheses: e.g. "Railway Recruitment Board (RRB)" -> "rrb"
+            const match = companyName.match(/\(([^)]+)\)/);
+            if (match && match[1]) {
+                const acronym = match[1].toLowerCase().trim();
+                // Ensure it's just letters
+                if (/^[a-z]+$/.test(acronym)) {
+                    urls.push(`${CDN_URL}/logos/${acronym}.png`);
+                }
+            } else {
+                // If no parenthesis, check if the whole name is just an acronym
+                const cleanName = companyName.toLowerCase().trim();
+                if (/^[a-z]+$/.test(cleanName) && cleanName.length <= 6) {
+                    urls.push(`${CDN_URL}/logos/${cleanName}.png`);
+                }
+            }
+            // Do not query third party favicons for government sites
+            return urls;
+        }
+
+        // 2. Resolve Domain
+        const websiteDomain = companyWebsite ? getRootDomain(companyWebsite) : null;
+        const applyDomain = applyLink ? getRootDomain(applyLink) : null;
+
+        const cleanName = normalizedName.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const knownDomain = BRAND_DOMAINS[cleanName] ||
+            Object.entries(BRAND_DOMAINS).find(([key]) => cleanName.includes(key))?.[1];
+
+        const domainsToTry = Array.from(new Set([
+            websiteDomain,
+            applyDomain,
+            knownDomain,
+            // Heuristic fallback: try company-name.com if it's a single word
+            !knownDomain && cleanName.length > 2 && cleanName.length < 15 && !cleanName.includes(' ') ? `${cleanName}.com` : null
+        ].filter((d): d is string => !!d)));
+
+        domainsToTry.forEach(d => {
+            // 1. Google Favicon (Good backup, returns 16px globe if not found which we manually reject)
+            urls.push(`https://www.google.com/s2/favicons?domain=${d}&sz=128`);
+        });
+
+        return Array.from(new Set(urls));
+    }, [companyLogoUrl, companyWebsite, applyLink, normalizedName, isGovDetected, companyName]);
+
+    // Use cached URL if available for instant load
+    const cacheKey = candidates.join('|');
+    const [attemptIndex, setAttemptIndex] = useState(0);
+    const [imgError, setImgError] = useState(() => logoCache.get(cacheKey) === 'error');
+    const [currentSrc, setCurrentSrc] = useState<string | null>(() => {
+        const cached = logoCache.get(cacheKey);
+        return cached === 'error' ? null : (cached || candidates[0] || null);
+    });
+
+    // Sync state when candidates change (prop change)
+    const [prevCacheKey, setPrevCacheKey] = useState(cacheKey);
+    if (cacheKey !== prevCacheKey) {
+        setPrevCacheKey(cacheKey);
+        const cached = logoCache.get(cacheKey);
+        if (cached === 'error') {
+            setAttemptIndex(candidates.length);
+            setImgError(true);
+            setCurrentSrc(null);
+        } else if (cached) {
+            setAttemptIndex(0);
+            setImgError(false);
+            setCurrentSrc(cached);
+        } else {
+            setAttemptIndex(0);
+            setImgError(false);
+            setCurrentSrc(candidates[0] || null);
+        }
+    }
+
+    // A tiny, cheap-to-download version of the exact same logo, used as the
+    // blurred placeholder while the full one streams in. Only Google favicons
+    // expose a size knob; for anything else we fall back to an initials chip.
+    const placeholderSrc = useMemo(() => {
+        if (!currentSrc) return null;
+        try {
+            const parsed = new URL(currentSrc);
+            const host = parsed.hostname.toLowerCase();
+            if ((host === 'google.com' || host.endsWith('.google.com')) && parsed.pathname.includes('/s2/favicons')) {
+                parsed.searchParams.set('sz', '16');
+                return parsed.toString();
+            }
+        } catch {
+            // Not a parseable URL — fall through to the initials chip.
+        }
+        return null;
+    }, [currentSrc]);
+
+    const initials = companyName
+        ? companyName.split(' ').filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase()
+        : 'C';
+
+    const handleError = () => {
+        if (attemptIndex < candidates.length - 1) {
+            const nextIndex = attemptIndex + 1;
+            setAttemptIndex(nextIndex);
+            setCurrentSrc(candidates[nextIndex]);
+        } else {
+            logoCache.set(cacheKey, 'error');
+            setImgError(true);
+        }
+    };
+
+    const handleLoad = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+        const target = e.target as HTMLImageElement;
+        // Fallback services (Google, DDG) might return tiny default icons (e.g. 16px globes or arrows).
+        // If an image is 16x16 or smaller from these services, reject it to trigger the text initials fallback.
+        let isFallbackProvider = false;
+        try {
+            const urlStr = candidates[attemptIndex];
+            if (urlStr) {
+                const parsed = new URL(urlStr);
+                const host = parsed.hostname.toLowerCase();
+                isFallbackProvider = host === 'google.com' || host.endsWith('.google.com') || host === 'duckduckgo.com' || host.endsWith('.duckduckgo.com');
+            }
+        } catch {}
+
+        if ((target.naturalWidth <= 16 || target.naturalHeight <= 16 || target.naturalWidth === 0) && isFallbackProvider) {
+            handleError();
+        } else {
+            // Success! Cache the working URL
+            logoCache.set(cacheKey, candidates[attemptIndex]);
+        }
+    };
+
+    if (!currentSrc || imgError) {
+        if (isGovDetected) {
+            return (
+                <div className={cn("w-16 h-16 flex items-center justify-center shrink-0 text-primary", className)}>
+                    <ShieldCheckIcon className="w-16 h-16" />
+                </div>
+            );
+        }
+        if (isTcsBrand) {
+            return (
+                <div className={cn("w-12 h-12 bg-brand-company-blue border border-brand-company-blue rounded flex items-center justify-center shrink-0", className)}>
+                    <span className="text-paper text-xs font-bold tracking-wide">TCS</span>
+                </div>
+            );
+        }
+        return (
+            // Initials fallback keeps a faint chip so text stays legible on any
+            // surface, but no border/shadow box around it.
+            <div className={cn("w-12 h-12 bg-muted/60 text-foreground font-bold text-xl rounded-lg flex items-center justify-center shrink-0", className)}>
+                {initials}
+            </div>
+        );
+    }
+
+    return (
+        <div className={cn(
+            // No background box: transparent wrapper, logo renders bare.
+            isGovDetected
+                ? "relative w-16 h-16 shrink-0 flex items-center justify-center"
+                : "relative w-12 h-12 shrink-0 flex items-center justify-center overflow-hidden",
+            className
+        )}>
+            {/* Blurred stand-in. It paints immediately, so a slow connection shows
+                a soft preview of the logo instead of a blank tile, then fades out
+                the moment the full-resolution logo has decoded. */}
+            <BlurImage
+                src={currentSrc}
+                alt={`${companyName} logo`}
+                width={isGovDetected ? 64 : 48}
+                height={isGovDetected ? 64 : 48}
+                className="object-contain w-full h-full"
+                onError={handleError}
+                onLoad={handleLoad}
+                priority={priority}
+                loading={priority ? undefined : 'lazy'}
+                referrerPolicy="no-referrer"
+                unoptimized={true}
+                blurPlaceholder={
+                    placeholderSrc ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- 16px preview, must skip the optimizer
+                        <img
+                            src={placeholderSrc}
+                            alt=""
+                            width={16}
+                            height={16}
+                            referrerPolicy="no-referrer"
+                            className="h-full w-full scale-110 object-contain blur-sm"
+                        />
+                    ) : (
+                        <span className="flex h-full w-full items-center justify-center rounded-lg bg-muted/60 text-xl font-bold text-foreground blur-xs">
+                            {initials}
+                        </span>
+                    )
+                }
+            />
+        </div>
+    );
+}

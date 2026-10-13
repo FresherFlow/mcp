@@ -1,0 +1,1346 @@
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ──────────────────────────────────────────────────────────────────────
+   Design Tokens — single source of truth (v4 CSS-first)
+
+   Light mode values live here. Dark mode overrides them in .dark below.
+   Component CSS references these via var(--color-*).
+   ────────────────────────────────────────────────────────────────────── */
+@theme {
+  /* Strong easing curves (Emil Kowalski). In @theme, not :root, so Tailwind
+     emits `ease-out-strong` / `ease-in-out-strong` / `ease-drawer` as real
+     utilities and no call site needs an arbitrary cubic-bezier. */
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* ── Core palette ─────────────────────────────────────────────── */
+  /* ONE navy, TWO jobs. `--color-primary` is the INK; `--color-action` is
+     the FILL. They were a single token doing four jobs — ink (14 aliases),
+     CTA fill, focus ring, and the tint on ~110 `bg-primary/10` "selected"
+     states — which is why a selected row reads as a button.
+
+     The values are identical for now, so NOTHING moves visually. The split
+     is structural: `bg-action` is the fill, `text-primary` is the ink, and
+     `bg-primary/10` becomes a violation rather than a habit. Migrating the
+     ~110 call sites is a separate, reviewable change.
+
+     See DESIGN.md for the full contract. */
+  --color-primary: oklch(20.6% 0.039 266); /* INK — deep navy. Text only. */
+  --color-primary-foreground: var(--color-paper); /* Paper — never pure white */
+  --color-action: oklch(20.6% 0.039 266); /* ACTION — CTA fill. Same navy for now. */
+  --color-action-foreground: var(--color-paper);
+
+  /* Neutral ramp. The page background is warm newsprint (#f4f1ea), so
+     every neutral below sits on the same warm hue (~85) rather than the
+     old cool 248-257. Mixing a warm page with cool-gray surfaces is what
+     made the sidebar and chips read as a different material. Chroma stays
+     very low (0.005-0.016) so these still read as paper, not as tan. */
+  --color-secondary: oklch(96.1% 0.008 85); /* Warm light gray */
+  --color-secondary-foreground: oklch(20.6% 0.039 266); /* Navy */
+
+  --color-accent: oklch(89.5% 0.010 85); /* Subtle hover bg (same as muted) — never navy */
+  --color-accent-foreground: oklch(20.6% 0.039 266); /* Navy text on accent */
+
+  --color-background: #f4f1ea; /* Page bg — warm newsprint (--ff-paper). */
+  --color-foreground: oklch(20.6% 0.039 266); /* Primary text */
+
+  --color-card: oklch(100% 0 0); /* Card bg — true white, a clear step above the paper */
+  --color-card-foreground: oklch(20.6% 0.039 266); /* Card text */
+  --color-popover: oklch(100% 0 0); /* Popover / menu bg */
+  --color-popover-foreground: oklch(20.6% 0.039 266); /* Popover text */
+
+  /* ── Borders & inputs ────────────────────────────────────────── */
+  --color-border: oklch(79% 0.013 80); /* Visible borders — warm hairline */
+  --color-input: oklch(79% 0.013 80); /* Input borders */
+  --color-ring: oklch(20.6% 0.039 266); /* Focus ring = primary */
+
+  /* ── Muted ───────────────────────────────────────────────────── */
+  --color-muted: oklch(91.5% 0.010 85); /* Muted bg — one step off the page */
+  --color-muted-foreground: oklch(29.5% 0.034 68); /* Muted text — 4.9:1 on card, 5.3:1 on muted */
+
+  /* ── Semantic states ─────────────────────────────────────────────
+     ONE red. This used to be three near-identical ones — `error`
+     (L61.2 hue 27), `destructive` (L63.6 hue 25) and `pin` (L57.2 hue 27)
+     — a 6-point lightness spread across the same hue, so "which red do I
+     use?" had no answer. `destructive` is the shadcn-canonical name and
+     the survivor; `error` and `pin` now alias it. Values differ by <3%
+     lightness, so almost nothing shifts visually.
+
+     Note `signal-dead` aliases `error`, which aliases `destructive`, so
+     the whole failure family resolves to one value in both themes. */
+  --color-destructive: oklch(63.6% 0.208 25); /* The one red */
+  --color-destructive-foreground: oklch(98.5% 0 90);
+
+  --color-success: oklch(61.1% 0.147 154); /* Green */
+  --color-error: var(--color-destructive); /* alias — one red only */
+  --color-warning: oklch(75.5% 0.17 64); /* Amber */
+
+  /* ── Signal language (plan 17 §17.3, additive) ───────────────── */
+  /* The truth system in type and color: used for stamps, board
+     eyebrows, urgency chips and the hero signal strip. Hues reuse the
+     existing success/warning/error palette so nothing new is invented. */
+  --color-signal-live: var(--color-success); /* emerald — confirmed live */
+  --color-signal-aging: var(--color-warning); /* amber — aging / unconfirmed */
+  --color-signal-dead: var(--color-error); /* rose — reported dead */
+  /* Was byte-identical to --color-brand-telegram. A semantic token and a
+     third-party brand token are different jobs, and "popular discussion"
+     should not be Telegram blue. */
+  --color-signal-heat: oklch(60% 0.145 240); /* sky — discussion heat */
+  --color-pin: var(--color-destructive); /* alias. The old separate "pin
+        red" existed to avoid reading as destructive, but the fix is role
+        discipline (DESIGN.md → Do's and Don'ts), not a fifth red. */
+
+  /* ── Chip / pill active states ───────────────────────────────── */
+  --color-chip-active: oklch(90% 0.012 84); /* Warm silver-gray */
+  --color-chip-active-text: oklch(20.6% 0.039 266); /* Navy */
+  --color-chip-active-border: oklch(
+    78% 0.026 78
+  ); /* Slightly darker than border */
+
+  /* ── Dropdown hover ──────────────────────────────────────────── */
+  --color-dropdown-hover: oklch(90% 0.016 82); /* Same as muted */
+  --color-dropdown-hover-text: oklch(20.6% 0.039 266);
+
+  /* Sidebar tokens (shadcn). The rail is a clean paper plane: near-white and
+     almost achromatic (chroma 0.004, one twentieth of the page tint), so it
+     separates from the newsprint page by LIGHTNESS alone.
+
+     It was `--color-muted` (oklch 91.5% 0.010 85) — a chromatic tan. Next to
+     the warm #f4f1ea page, two warm planes at different lightness do not read
+     as hierarchy, they read as a mismatch: the rail looked dirty against the
+     content. The fix is to drop the chroma, not to darken it further.
+
+     The accent and border follow the same rule — a soft neutral row and a light
+     hairline, so the selected item reads as a selection rather than a tan chip.
+     A neutral rail also needs no hue-matched border; the tonal step does the
+     separating. */
+  --color-sidebar: var(--color-paper);
+  --color-sidebar-foreground: oklch(20.6% 0.039 266);
+  --color-sidebar-primary: oklch(20.6% 0.039 266);
+  --color-sidebar-primary-foreground: var(--color-paper);
+  --color-sidebar-accent: oklch(
+    92% 0.005 85
+  ); /* Selected/hover row — a step below the rail, near-neutral */
+  --color-sidebar-accent-foreground: oklch(20.6% 0.039 266);
+  --color-sidebar-border: oklch(86% 0.006 85); /* Light neutral hairline */
+  --color-sidebar-ring: oklch(20.6% 0.039 266); /* Same as foreground */
+
+  /* ── Brand / third-party colors ──────────────────────────────── */
+  --color-brand-telegram: oklch(66.2% 0.133 236); /* #229ED9 */
+  --color-brand-whatsapp: oklch(76.1% 0.201 150); /* #25D366 */
+  --color-brand-whatsapp-hover: oklch(71.7% 0.19 150); /* #22c35e */
+  --color-brand-linkedin: oklch(51.6% 0.163 255); /* #0A66C2 */
+  --color-brand-discord: oklch(57.7% 0.209 274); /* #5865F2 */
+  --color-brand-facebook: oklch(58.9% 0.203 258); /* #1877F2 */
+  --color-brand-company-blue: oklch(46% 0.129 250); /* #005a9c */
+  /* Google mark — the official 4-colour G on the sign-in screen. Fixed brand
+     palette, identical in light and dark. */
+  --color-brand-google-red: oklch(62.6% 0.206 29.1); /* #EA4335 */
+  --color-brand-google-yellow: oklch(83% 0.17 84); /* #FBBC05 */
+  --color-brand-google-blue: oklch(63% 0.18 260); /* #4285F4 */
+  --color-brand-google-green: oklch(64.8% 0.16 148.5); /* #34A853 */
+
+  /* ── Landing accent (brand orange #ff571a = --ff-accent) ──────── */
+  --color-ff-accent: oklch(
+    64.8% 0.22 32
+  ); /* #ff571a — hero CTA, marquee, section dots */
+  /* Label colour for text sitting ON a --ff-accent fill. The brand orange is
+     a bright field: --color-paper on it is only 3.2:1, which fails AA for the
+     13.5px semibold CTA labels. The deep navy is 4.97:1 on the same fill and
+     is already the site's ink, so the CTA gains contrast without adding a
+     colour. Pair with bg-ff-accent, never as a text colour on paper. */
+  --color-ff-accent-ink: oklch(20.6% 0.039 266);
+  --color-logo-bg: oklch(
+    16% 0.02 260
+  ); /* #0e1420 — logo tile, fixed in light & dark */
+
+  /* ── Surface colors ──────────────────────────────────────────── */
+  --color-surface-warm: oklch(
+    98.4% 0.006 88
+  ); /* #F7F5F0 — warm raised surface, a hair above the page */
+
+  /* Paper: the sidebar plane and the color of text on saturated fills. It
+     used to equal --color-background; now the page is the warmer newsprint
+     #f4f1ea, so paper is a clear step lighter and the rail separates from the
+     content by lightness instead of by adding more warmth. */
+  --color-paper: oklch(99% 0.004 85);
+
+  /* ── Legacy brand palette: REMOVED ─────────────────────────────────
+     This file used to carry a SECOND palette alongside the semantic
+     `--color-*` set: --ff-paper, --ff-paper-raised, --ff-rule, --ff-ink,
+     --ff-ink-soft, --ff-ink-faint, --ff-stamp, --ff-stamp-lift.
+
+     All eight were dead — exactly one reference each, their own definition.
+     `--ff-ink` (#17181c, a near-black) was the real damage: it competed with
+     the navy `--color-primary` ink, which is a large part of why the admin
+     shell and the job pages read as two products sharing components.
+
+     Warm newsprint is still the page: it is `--color-background` (#f4f1ea).
+     Nothing was lost but the duplicate name. `--ff-accent` and the
+     `--ff-band-*` instrument palette survive further down; they are a
+     distinct always-dark marketing component, not a competing UI palette. */
+
+  /* ── Typography ──────────────────────────────────────────────── */
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  /* Plan 17 §17.2 identity layer: display + "official record" voices.
+     Distinct utility names (font-display / font-record) so adding them
+     cannot change any existing surface's typography. */
+  --font-display:
+    var(--font-bricolage), "Inter", system-ui, -apple-system, sans-serif;
+  --font-record:
+    var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Two scale steps Tailwind does not ship: 13px metadata and 11px micro-labels
+     (the `--fs-*` vars above stay responsive, these stay fixed). */
+  --text-meta: 13px;
+  --text-micro: 11px;
+
+  /* ── Spacing ─────────────────────────────────────────────────── */
+  --spacing-18: 4.5rem;
+  --spacing-22: 5.5rem;
+
+  /* ── Radius ──────────────────────────────────────────────────── */
+  --radius-xl: var(--radius);
+  --radius-2xl: calc(var(--radius) + 4px);
+  --radius-3xl: calc(var(--radius) + 8px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  /* A default focus ring for every keyboard-reachable element.
+
+     This replaces `* { @apply focus-visible:outline-none focus-visible:ring-0 }`,
+     which stripped both the outline and the ring from every element in the app.
+     Only components that re-added a ring were visible to keyboard users; the
+     ~49 that added only `focus:outline-none` (and `ThemeSwitcher`,
+     `ResourcePageView`, `NotificationsDropdown`, the DataGrid toolbar, …) had
+     no focus indicator at all.
+
+     `:where()` keeps specificity at 0, and this sits in `@layer base` — so any
+     component's own `focus-visible:ring-*` or `focus-visible:outline-none`
+     utility still wins. */
+  :where(a, button, summary, input, select, textarea, [tabindex]):focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+
+  /* Override Radix scroll locking for sticky headers (shadcn-admin parity):
+     opening the drawer Sheet locks body scroll + compensates scrollbar width,
+     which freezes fixed/sticky chrome and visibly hangs open/close. Keep the
+     page live behind the modal instead. */
+  body[data-scroll-locked] {
+    overflow: unset !important;
+  }
+
+  :root {
+    color-scheme: light dark;
+    --radius: 10px;
+
+    /* Strong easing curves live in @theme above so Tailwind emits real
+       `ease-*` utilities (ease-out-strong) instead of arbitrary values. */
+
+    /* Typography Scale - Mobile First */
+    --fs-h1: 28px;
+    --fs-h2: 22px;
+    --fs-h3: 18px;
+    --fs-body: 16px;
+    --fs-small: 13px;
+    --fs-button: 13px;
+
+    /* Spacing System */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-10: 40px;
+    --space-12: 48px;
+
+    /* Base Logo */
+    --logo-image: url("/logo-white-optimized.png?v=3");
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    /* Core palette — OLED-style deep black */
+    --color-background: oklch(10.3% 0.007 196); /* #020404 */
+    --color-foreground: oklch(97.7% 0.003 229); /* #F5F7F8 */
+
+    --color-card: oklch(17.1% 0.004 220); /* 5% white lift */
+    --color-card-foreground: oklch(97.7% 0.003 229);
+    --color-popover: oklch(21.5% 0.005 220); /* Elevated menu surface */
+    --color-popover-foreground: oklch(97.7% 0.003 229);
+
+    --color-primary: oklch(97.7% 0.003 229);
+    --color-primary-foreground: oklch(10.3% 0.007 196);
+
+    --color-secondary: oklch(24% 0.007 220);
+    --color-secondary-foreground: oklch(97.7% 0.003 229);
+
+    --color-accent: oklch(97.7% 0.003 229);
+    --color-accent-foreground: oklch(10.3% 0.007 196);
+
+    /* Crisp borders — 12% white equivalent */
+    --color-border: oklch(26.2% 0.008 220);
+    --color-input: oklch(26.2% 0.008 220);
+
+    --color-muted: oklch(24% 0.007 220); /* Slightly lighter than card */
+    --color-muted-foreground: oklch(80.8% 0.017 229);
+
+    --color-ring: oklch(97.7% 0.003 229);
+
+    --color-destructive: oklch(56.1% 0.195 26);
+    --color-destructive-foreground: oklch(98.5% 0 90);
+
+    --color-success: oklch(66.6% 0.134 157);
+    --color-error: var(--color-destructive); /* one red, as in light mode */
+  --color-warning: oklch(80.1% 0.138 82);
+  /* Signal had no dark overrides at all, so the light values leaked through
+     in dark mode. Aliasing them to the dark semantic states fixes it. */
+  --color-signal-live: var(--color-success);
+  --color-signal-aging: var(--color-warning);
+  --color-signal-dead: var(--color-error);
+  --color-signal-heat: oklch(72% 0.12 240); /* lifted for dark; the light
+     value (L60) sits too close to the dark page */
+  --color-pin: var(--color-destructive);
+
+    --color-chip-active: oklch(27.3% 0.009 220);
+    --color-chip-active-text: oklch(97.7% 0.003 229);
+    --color-chip-active-border: oklch(36.5% 0.013 220);
+
+    --color-dropdown-hover: oklch(24% 0.007 220);
+    --color-dropdown-hover-text: oklch(97.7% 0.003 229);
+
+    --color-sidebar: oklch(17.1% 0 0);
+    --color-sidebar-foreground: oklch(97.7% 0.003 229);
+    --color-sidebar-primary: oklch(97.7% 0.003 229);
+    --color-sidebar-primary-foreground: oklch(10.3% 0.007 196);
+    --color-sidebar-accent: oklch(24% 0 0);
+    --color-sidebar-accent-foreground: oklch(97.7% 0.003 229);
+    --color-sidebar-border: oklch(26.2% 0 0);
+    --color-sidebar-ring: oklch(97.7% 0.003 229);
+
+    --logo-image: url("/logo-white-optimized.png?v=3");
+  }
+
+  /* Theme-aware native form controls */
+  input,
+  textarea,
+  select {
+    color-scheme: light;
+  }
+
+  .dark input,
+  .dark textarea,
+  .dark select {
+    color-scheme: dark;
+  }
+
+  .dark
+    .bg-card
+    input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not(
+      [type="button"]
+    ),
+  .dark .bg-card select,
+  .dark .bg-card textarea,
+  .dark .bg-card .bg-secondary\/20,
+  .dark .bg-card .bg-muted\/20,
+  .dark
+    form
+    input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not(
+      [type="button"]
+    ),
+  .dark form select,
+  .dark form textarea {
+    background-color: oklch(26.2% 0.008 220) !important;
+  }
+
+  /* Desktop Typography Scale */
+  @media (min-width: 1024px) {
+    :root {
+      --fs-h1: 38px;
+      --fs-h2: 28px;
+      --fs-h3: 22px;
+      --fs-body: 16px;
+      --fs-small: 14px;
+      --fs-button: 14px;
+    }
+  }
+
+  html {
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    /* PWA fix: fills status-bar/safe-area so Android won't draw a divider line */
+    background-color: #e2eaf2;
+    @apply font-sans;
+  }
+
+  /* PWA fix: dark mode status-bar background */
+  html.dark,
+  .dark html {
+    background-color: #0d0f14;
+  }
+
+  html,
+  body {
+    /* Fast switch by default; view-transition handles the animation */
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    ::view-transition-new(theme-transition) {
+      clip-path: inset(0 0 100% 0);
+      animation: slide-in-from-top 0.65s forwards cubic-bezier(0.65, 0, 0.35, 1);
+    }
+
+    ::view-transition-old(theme-transition) {
+      animation: none;
+    }
+
+    @keyframes slide-in-from-top {
+      to {
+        clip-path: inset(0 0 0 0);
+      }
+    }
+  }
+
+  body {
+    overflow-x: clip;
+    max-width: 100vw;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+    background-image: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-family: var(--font-sans);
+    font-size: var(--fs-body);
+    line-height: 1.6;
+    @apply bg-background text-foreground;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[role="button"] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
+  ::placeholder {
+    color: oklch(from var(--color-muted-foreground) l c h / 0.75);
+  }
+}
+
+@layer components {
+  /* ── Typography ───────────────────────────────────────────────── */
+  h1,
+  .h1 {
+    font-size: var(--fs-h1);
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    color: var(--color-foreground);
+  }
+
+  h2,
+  .h2 {
+    font-size: var(--fs-h2);
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--color-foreground);
+  }
+
+  h3,
+  .h3 {
+    font-size: var(--fs-h3);
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--color-foreground);
+  }
+
+  /* ── Container Utilities ─────────────────────────────────────── */
+  .max-content {
+    max-width: 1280px;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  @media (min-width: 768px) {
+    .max-content {
+      padding-left: 1rem;
+      padding-right: 1rem;
+    }
+  }
+
+  .container-app {
+    max-width: 1440px;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  @media (min-width: 768px) {
+    .container-app {
+      padding-left: 2rem;
+      padding-right: 2rem;
+    }
+  }
+
+  /* Global Icon Standards */
+  svg.icon {
+    color: var(--color-foreground);
+  } /* Ensure Heroicons in common containers follow the rule */
+  .feature-icon svg {
+    color: var(--color-foreground);
+  }
+
+  /* ── Text hierarchy ──────────────────────────────────────────── */
+  .text-body {
+    color: var(--color-foreground);
+  }
+
+  .text-secondary {
+    color: var(--color-muted-foreground);
+  }
+}
+
+@layer utilities {
+  .tap-highlight-none {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .chip-active {
+    background-color: var(--color-chip-active);
+    color: var(--color-chip-active-text);
+    border-color: var(--color-chip-active-border);
+  }
+  .chip-active:hover {
+    filter: brightness(0.96);
+  }
+  .dropdown-item-hover:hover {
+    background-color: var(--color-dropdown-hover);
+    color: var(--color-dropdown-hover-text);
+  }
+  .dropdown-item-active {
+    background-color: var(--color-dropdown-hover);
+    color: var(--color-dropdown-hover-text);
+    font-weight: 600;
+  }
+}
+
+/* Hydration Flicker Fix */
+html[data-logged-in="true"] .auth-guest-only {
+  display: none !important;
+}
+html[data-logged-in="false"] .auth-user-only {
+  display: none !important;
+}
+
+/* Pre-hydration collapsed rail.
+   SSR HTML has no `data-collapsible`: the server cannot read the sidebar cookie
+   without forcing dynamic rendering, which public SEO routes must not do. The
+   primitive's collapse rules are all `group-data-[collapsible=icon]:…`, so
+   before hydration the rail would paint at the collapsed WIDTH (HeadInjections
+   already sets `--sidebar-w: 3rem` from the same cookie) while every
+   `expanded-only` label, badge and wordmark was still laid out and visible —
+   which is exactly the clipped `Brow…` / `Disco…` / `Comm…` group labels seen
+   on reload.
+
+   `HeadInjections` writes `html[data-sidebar]` before first paint, so keying
+   these off the same attribute gives a correct first frame. Every value below
+   MIRRORS a primitive rule exactly, so nothing changes once the primitive's
+   own `data-collapsible` lands — that is the whole point of this layer.
+
+   Only selectors the primitive actually emits are listed. The old
+   `.sidebar-expanded-only` / `.nav-collapse-hide` / `[data-nav-badge]` rules
+   went out with `NavMain.tsx` and were deliberately NOT reinstated as dead
+   CSS. */
+
+/* Scoped to `lg` and up: the collapsed rail is `hidden lg:block`, so below
+   `lg` there is no collapsed rail to mirror and these rules must not apply.
+   This is not cosmetic. `html[data-sidebar]` is written to <html> by
+   `sidebarState.ts`, and <body> is a descendant of <html> — so the portalled
+   mobile drawer (a child of <body>) was matching every rule below. A user with
+   a collapsed desktop rail therefore got `display:none` group labels and 2rem
+   icon-only menu buttons in the drawer: the nav rendered as a bare icon rail at
+   any width, on both the admin and user drawers. The drawer has its own
+   full-width layout and must never inherit the rail's collapsed chrome. */
+@media (min-width: 64rem) {
+  html[data-sidebar='collapsed'] [data-sidebar='group-label'] {
+    display: none;
+  }
+  html[data-sidebar='collapsed'] [data-sidebar='menu-button'] {
+    width: 2rem !important;
+    height: 2rem !important;
+    padding: 0.5rem !important;
+  }
+  html[data-sidebar='collapsed'] [data-sidebar='menu-button'] > svg {
+    width: 1rem !important;
+    height: 1rem !important;
+  }
+  /* The header row is a `size="lg"` button, and stock shadcn collapses that size
+     to `!p-0` — NOT the base `!p-2`. The generic 0.5rem above therefore pushed
+     the 32px logo tile 8px right inside the 32px button and clipped it, so the
+     header appeared shifted right on reload and snapped left after hydration.
+     Mirror the primitive: `size="lg"` rows get zero padding pre-hydration. */
+  html[data-sidebar='collapsed'] [data-sidebar='header'] [data-sidebar='menu-button'] {
+    padding: 0 !important;
+  }
+  /* Collapsed box chrome: the white switcher box and the full user card must not
+     render squeezed into the narrow rail. Unlayered CSS beats layered utilities
+     deterministically. */
+  html[data-sidebar='collapsed'] .nav-switcher-btn {
+    background-color: transparent;
+    border-width: 0;
+  }
+  html[data-sidebar='collapsed'] [data-sidebar='footer'] [data-sidebar='menu-button'] {
+    padding: 0 !important;
+  }
+}
+
+/* Hidden Scrollbar - Scroll functionality preserved */
+::-webkit-scrollbar {
+  display: none;
+}
+
+html {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+
+/* Live ticker scrolling animation */
+@keyframes ticker {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+/* Mobile navigation drawer: motion cut.
+   Diagnostic first, deliberately blunt. The panel and its scrim are given no
+   animation and no transition, so the drawer appears and disappears in a
+   single frame. If the drawer still stutters with zero motion, the jank is in
+   the content mount or the scroll lock — not in the animation — and cutting
+   the animation bought us the answer for free.
+
+   Unlayered, so it deterministically beats the layered Tailwind utilities that
+   put animate-in/animate-out on the Sheet.
+
+   Revert by deleting this block; restore the smooth slide by also removing
+   `data-nav-drawer` from the SheetContent in MobileTopNav. */
+[data-nav-drawer],
+body:has([data-nav-drawer]) > [data-radix-dialog-overlay] {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* ── Landing identity (HydraDB-structure study, docs/research/) ──────────
+   Selection uses the brand ink instead of the default blue. The marquee
+   track reuses the existing `ticker` keyframes. All motion is
+   transform/opacity only and disabled under reduced motion. */
+::selection {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+/* Always-dark "instrument band" palette (mock: #0e1420 family).
+   Theme-independent so light AND dark mode render the mock exactly.
+
+   The `--sidebar-*` aliases that used to sit here are REMOVED. They were a
+   second name for every `--color-sidebar-*` token — eight tokens, eight
+   aliases, zero behavioural difference — so every sidebar colour had two
+   spellings and two places to change. shadcn's `bg-sidebar` utilities read
+   `--color-sidebar-*` directly, so nothing else needed them. */
+:root {
+  --ff-band-bg: #0e1420;
+  --ff-band-surface: #151d2e;
+  --ff-band-line: #2a3448;
+  --ff-band-ink: #eef1f6;
+  --ff-band-muted: #8b93a5;
+  --ff-accent: #ff571a;
+}
+
+.ff-marquee-track {
+  display: inline-flex;
+  gap: 3rem;
+  white-space: nowrap;
+  will-change: transform;
+  animation: ticker 70s linear infinite;
+}
+
+html.ff-smooth {
+  scroll-behavior: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ff-marquee-track {
+    animation: none;
+  }
+  /* Overlay motion (Dialog/AlertDialog/Sheet/Popover) is decorative travel
+     only — it carries no information, so reduced motion drops it entirely
+     rather than substituting a slide that can still trigger vestibular
+     symptoms. The state change itself is instant and remains perceivable. */
+  [data-slot='dialog-overlay'],
+  [data-radix-dialog-overlay],
+  [data-slot='dialog-content'],
+  [data-radix-dialog-content],
+  [data-slot='sheet-overlay'],
+  [data-slot='sheet-content'],
+  [data-slot='popover-content'],
+  [data-slot='dropdown-menu-content'],
+  [data-slot='select-content'] {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ── Hero styles ───────────────────────────────────────────────────────── */
+.ff-hero-note {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  padding: 6px 12px;
+  border-radius: 2px;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-record);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.ff-hero-note b {
+  color: var(--color-foreground);
+  font-weight: 600;
+}
+.ff-hero-h1 {
+  margin: 28px 0 20px;
+}
+.ff-hero-h1 .line {
+  display: block;
+  opacity: 0;
+  transform: translateY(14px);
+  animation: ff-line-in 0.5s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+.ff-hero-h1 .accent {
+  color: var(--ff-accent);
+}
+@keyframes ff-line-in {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.ff-hero-sub {
+  margin-top: 20px;
+  font-size: 17px;
+  color: var(--color-muted-foreground);
+  max-width: 54ch;
+}
+.ff-hero-ctas {
+  display: flex;
+  gap: 12px;
+  margin-top: 32px;
+  flex-wrap: wrap;
+}
+.ff-hero-meta {
+  margin-top: 44px;
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-record);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+}
+.ff-hero-meta span b {
+  color: var(--color-foreground);
+  font-weight: 600;
+}
+.ff-hero-eyebrow {
+  margin-top: 56px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ff-hero-h1 .line {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Always-dark instrument bands (plain CSS — theme-proof) ──────────────
+   Literal values so light/dark render identically. Headings inside bands
+   get explicit light color because the global h1–h3 rules in @layer
+   components set color: var(--color-foreground) — an explicit element color
+   beats an inherited one, which made band headings invisible in light mode. */
+.ff-band {
+  background: #0e1420;
+  color: #eef1f6;
+}
+.ff-band h1,
+.ff-band h2,
+.ff-band h3 {
+  color: #eef1f6;
+}
+.ff-band-muted {
+  color: #8b93a5;
+}
+.ff-band-line {
+  border-color: #2a3448;
+}
+.ff-band-box {
+  background: #151d2e;
+  border: 1px solid #2a3448;
+}
+
+/* Nav action buttons — mock .btn / .btn-ghost / .btn-sm */
+.ff-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 2px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  border: 1px solid var(--color-foreground);
+  background: transparent;
+  color: var(--color-foreground);
+  transition:
+    transform 0.15s ease,
+    opacity 0.15s ease;
+}
+.ff-nav-btn:hover {
+  transform: translateY(-1px);
+}
+.ff-nav-btn:active {
+  transform: scale(0.98);
+}
+.ff-nav-btn-primary {
+  background: var(--color-foreground);
+  color: var(--color-background);
+}
+
+/* Landing page entrance animation — content visible immediately, animates in */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.5s cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up {
+    animation: none;
+  }
+}
+
+/* Company Description / Careers Guide Prose Typography */
+.company-description-prose h3 {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--color-foreground);
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.01em;
+}
+
+.company-description-prose h3:first-of-type {
+  margin-top: 0;
+}
+
+.company-description-prose p {
+  margin-bottom: 1rem;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--color-muted-foreground);
+}
+
+.company-description-prose ol,
+.company-description-prose ul {
+  padding-left: 1.25rem;
+  margin-bottom: 1rem;
+  list-style-position: outside;
+}
+
+.company-description-prose ol {
+  list-style-type: decimal;
+}
+
+.company-description-prose ul {
+  list-style-type: disc;
+}
+
+.company-description-prose li {
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--color-muted-foreground);
+}
+
+.company-description-prose strong {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.company-description-prose em {
+  font-style: italic;
+}
+
+/* Leaflet.markercluster — precise marker wrappers */
+.walkin-cluster-marker,
+.walkin-venue-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+/*
+  We set iconSize and iconAnchor to 0,0 in Leaflet.
+  This means the marker's top-left 0,0 origin is placed EXACTLY on the map coordinate.
+  By absolutely positioning and translating -50%, -50%, we perfectly center the circular
+  pill over the exact coordinate, ensuring spiderfy legs connect perfectly to the center.
+*/
+.venue-pill-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 500;
+}
+
+.venue-pill-wrapper:hover,
+.venue-pill-wrapper.state-hovered,
+.venue-pill-wrapper.state-selected {
+  z-index: 1000;
+}
+
+/* The actual 36x36 circular marker */
+.venue-pill-circle {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--color-card);
+  border: 1px solid oklch(from var(--color-border) l c h / 0.5);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+  position: relative;
+  z-index: 2;
+}
+
+.venue-pill-logo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.venue-pill-initial {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--color-foreground);
+  letter-spacing: -0.02em;
+}
+
+/* Flyout label (Company, Salary, etc.) — hidden by default, shown on hover/select */
+.venue-pill-flyout {
+  position: absolute;
+  left: calc(100% + 4px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.95);
+  opacity: 0;
+  pointer-events: none;
+  background: var(--color-card);
+  padding: 3px 8px;
+  border-radius: 999px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--color-foreground);
+  transition: all 0.15s ease;
+  transform-origin: left center;
+  z-index: 1;
+}
+
+/* Show flyout on hover or selection */
+.venue-pill-wrapper:hover .venue-pill-flyout,
+.venue-pill-wrapper.state-hovered .venue-pill-flyout,
+.venue-pill-wrapper.state-selected .venue-pill-flyout {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+/* Hover and selection states — simple, no glow */
+.venue-pill-wrapper:hover .venue-pill-circle,
+.venue-pill-wrapper.state-hovered .venue-pill-circle {
+  transform: scale(1.1);
+}
+
+.venue-pill-wrapper.state-selected .venue-pill-circle {
+  transform: scale(1.15);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+
+.venue-pill-wrapper.state-selected .venue-pill-flyout {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+.venue-pill-salary {
+  font-size: 9.5px;
+  color: var(--color-muted-foreground);
+  margin-left: 2px;
+}
+
+.venue-pill-transit {
+  font-size: 9px;
+  color: oklch(55% 0.2 300);
+  margin-left: 2px;
+  white-space: nowrap;
+}
+
+.dark .venue-pill-transit {
+  color: oklch(72% 0.15 300);
+}
+
+/* Cluster Pill */
+.cluster-pill-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  color: var(--color-paper);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: #059669;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.dark .cluster-pill-wrapper {
+  background: #10b981;
+}
+
+/* ── Pinned-fresh motion (plan 17 §17.1.3) ──────────────────────────────
+   New notices pin in: rise from 8px and settle from a slight rotation.
+   Transform/opacity only; disabled entirely under reduced motion. */
+@keyframes ff-pin-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) rotate(-1.5deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(0deg);
+  }
+}
+
+@keyframes ff-word-reveal {
+  from {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+.ff-pin-in {
+  animation: ff-pin-in 520ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.ff-word-reveal {
+  animation: ff-word-reveal 400ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  display: inline-block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ff-pin-in,
+  .ff-word-reveal {
+    animation: none;
+  }
+}
+
+.cluster-pill-wrapper.size-sm {
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
+}
+.cluster-pill-wrapper.size-md {
+  width: 38px;
+  height: 38px;
+  font-size: 13px;
+}
+.cluster-pill-wrapper.size-lg {
+  width: 44px;
+  height: 44px;
+  font-size: 13px;
+}
+
+/* Leaflet.markercluster animation */
+.leaflet-cluster-anim .leaflet-marker-icon,
+.leaflet-cluster-anim .leaflet-marker-shadow {
+  transition:
+    transform 0.3s ease-out,
+    opacity 0.3s ease-in;
+}
+
+/* Spider leg lines (thin and subtle) */
+.leaflet-cluster-spider-leg {
+  stroke: #10b981;
+  stroke-opacity: 0.4;
+}
+
+/* Mobile map drag handle */
+.mobile-map-drag-handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: oklch(from var(--color-muted-foreground) l c h / 0.3);
+  margin: 8px auto 4px;
+}
+
+/* Smooth map/list transition on mobile */
+.map-view-enter {
+  animation: slide-up-fade 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slide-up-fade {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* ── Layout & stacking utilities ─────────────────────────
+   Named utilities for layout/stacking values that have no Tailwind scale
+   equivalent. Declared here so components reference a utility instead of an
+   arbitrary value (see apps/web/DESIGN_SYSTEM.md and the shadcn/no-arbitrary-values
+   lint rule). Values are intentionally bespoke layout primitives. */
+@utility ff-reading-col {
+  max-width: 52rem;
+}
+
+@utility ff-detail-split {
+  grid-template-columns: 45% 55%;
+}
+
+@utility ff-pane-transition {
+  transition-property: top, height, opacity;
+}
+
+@utility ff-blur-hairline {
+  -webkit-backdrop-filter: blur(1px);
+  backdrop-filter: blur(1px);
+}
+
+@utility ff-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@utility ff-safe-top-pad {
+  padding-top: calc(3.5rem + env(safe-area-inset-top));
+}
+
+@utility ff-dvh-92 {
+  height: 92dvh;
+}
+
+@utility ff-bottom-fab {
+  bottom: 5.5rem;
+}
+
+@utility ff-min-w-2ch {
+  min-width: 2ch;
+}
+
+/* ── Auth shell + display type ───────────────────────────────
+   The compact auth box: page-width gutter, viewport-capped height, the
+   9/11 brand/form split, the form column caps, the fluid display
+   headline, and the brand-panel dot grid. None of these have a
+   Tailwind scale step, so they live here instead of as arbitrary
+   values at the call site. */
+@utility ff-auth-split {
+  grid-template-columns: 9fr 11fr;
+}
+
+@utility ff-shell-gutter {
+  padding-left: 7%;
+  padding-right: 7%;
+}
+
+@utility ff-shell-max-h {
+  max-height: calc(100svh - 4rem);
+}
+
+@utility ff-form-col {
+  max-width: min(580px, 100%);
+}
+
+@utility ff-form-col-lg {
+  max-width: min(580px, 75%);
+}
+
+/* Line-height and tracking for this size stay with the unlayered
+   .ff-hero-h1 base, which outranks utilities. */
+@utility ff-display-h1 {
+  font-size: clamp(28px, 2.4vw, 36px);
+}
+
+@utility ff-dot-grid {
+  background-image: radial-gradient(
+    var(--color-muted-foreground) 1px,
+    transparent 1px
+  );
+  background-size: 18px 18px;
+  mask-image: linear-gradient(to bottom, black 0%, transparent 50%);
+}
+
+@utility ff-hide-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* ── Company-name truncation ───────────────────────────────
+   The two caps on the job-card meta row. Not numeric utilities:
+   Tailwind would read `max-w-18` as the `--spacing-18` theme key
+   (4.5rem), not 18rem. */
+@utility ff-company-cap {
+  max-width: 14rem;
+}
+
+@utility ff-company-cap-lg {
+  max-width: 18rem;
+}
+
+/* Custom z-index scale (Tailwind default caps at z-50) */
+@utility z-fab {
+  z-index: 60;
+}
+
+@utility z-fab-raised {
+  z-index: 61;
+}
+
+@utility z-sheet {
+  z-index: 70;
+}
+
+@utility z-overlay {
+  z-index: 100;
+}
+
+@utility z-modal {
+  z-index: 110;
+}
+
+@utility z-modal-raised {
+  z-index: 120;
+}
+/* Press feedback scale (Tailwind has no scale-97/98 step) */
+@utility active-press {
+  &:active {
+    transform: scale(0.97);
+  }
+}
+
+@utility active-press-soft {
+  &:active {
+    transform: scale(0.98);
+  }
+}
+
+/* Legacy shadcn dark sidebar block deleted: --color-sidebar-* already carry
+   dark oklch values in .dark above, and --sidebar-* are aliases of them. */
+
+/* Sidebar submenu expand/collapse — port of shadcn-admin's `.CollapsibleContent`
+   (src/styles/index.css). Radix exposes the measured panel height, so the
+   submenu slides open/closed instead of snapping. Selected by `data-slot`
+   (stamped by ui/Collapsible.tsx) so no call site carries a styling class. */
+[data-slot='collapsible-content'] {
+  overflow: hidden;
+}
+[data-slot='collapsible-content'][data-state='open'] {
+  animation: ff-collapsible-slide-down 300ms ease-out;
+}
+[data-slot='collapsible-content'][data-state='closed'] {
+  animation: ff-collapsible-slide-up 300ms ease-out;
+}
+@keyframes ff-collapsible-slide-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+  }
+}
+@keyframes ff-collapsible-slide-up {
+  from {
+    height: var(--radix-collapsible-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-slot='collapsible-content'][data-state='open'],
+  [data-slot='collapsible-content'][data-state='closed'] {
+    animation: none;
+  }
+}
